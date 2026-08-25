@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Wilma",
+        "description": "Huoltajan Wilma-tunnus. Oletusosoite on Helsingin Wilma.",
+        "data": {
+          "url": "Wilma-osoite",
+          "username": "Käyttäjätunnus",
+          "password": "Salasana",
+          "scan_interval": "Päivitysväli (s)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Kirjautuminen epäonnistui",
+      "cannot_connect": "Wilmaan ei saatu yhteyttä"
+    },
+    "abort": {
+      "already_configured": "Tämä tunnus on jo lisätty"
+    }
+  }
+}
