@@ -7,6 +7,7 @@ reads timetable / homework / exams / lesson notes from the same browser session
 (no Visma developer API key).
 
 Default tenant in the config flow is Helsinki: `https://helsinki.inschool.fi`
+Same flow works on other Visma schools — confirmed on Kaarina (`https://kaarina.inschool.fi`).
 
 > Not affiliated with Visma or Wilma. Endpoints outside `/messages` are
 > unofficial and can change when Wilma updates.
