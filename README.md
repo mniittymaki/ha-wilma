@@ -81,7 +81,7 @@ config flow lists `/{id}/roles` and asks which child to bind.
 Add the integration **again** with the same username to set up the second child.
 Unique id is `url:username:child_id`, so both entries are allowed.
 
-Each entry is its own device (`Wilma (Lucas)`). Before every poll the
+Each entry is its own device (`Wilma (Name)`). Before every poll the
 integration switches role with `GET /!childid` and then reads that child's
 overview.
 
