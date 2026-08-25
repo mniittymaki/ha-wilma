@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Wilma",
+        "description": "Huoltajan Wilma-tunnus. Oletusosoite on Helsingin Wilma.",
+        "data": {
+          "url": "Wilma-osoite",
+          "username": "Käyttäjätunnus",
+          "password": "Salasana",
+          "scan_interval": "Päivitysväli (s)"
+        }
+      },
+      "child": {
+        "title": "Valitse lapsi",
+        "description": "Samalla tunnuksella voi lisätä useamman lapsen: lisää integraatio uudestaan ja valitse toinen.",
+        "data": {
+          "child_id": "Lapsi"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Kirjautuminen epäonnistui",
+      "cannot_connect": "Wilmaan ei saatu yhteyttä"
+    },
+    "abort": {
+      "already_configured": "Tämä lapsi on jo lisätty"
+    }
+  }
+}

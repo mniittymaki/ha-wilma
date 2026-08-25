@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Wilma",
+        "description": "Guardian Wilma account. Default URL is Helsinki Wilma.",
+        "data": {
+          "url": "Wilma URL",
+          "username": "Username",
+          "password": "Password",
+          "scan_interval": "Update interval (s)"
+        }
+      },
+      "child": {
+        "title": "Select child",
+        "description": "Add the integration again to set up another child on the same account.",
+        "data": {
+          "child_id": "Child"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Login failed",
+      "cannot_connect": "Could not reach Wilma"
+    },
+    "abort": {
+      "already_configured": "This child is already configured"
+    }
+  }
+}

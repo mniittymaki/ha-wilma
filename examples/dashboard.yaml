@@ -1,0 +1,36 @@
+# Example Lovelace view
+
+Replace `SENSORPREFIX` with your entity prefix, e.g.
+`sensor.wilma_user_gmail_com`.
+
+```yaml
+- title: Wilma
+  icon: mdi:school
+  path: wilma
+  type: masonry
+  cards:
+    - type: glance
+      columns: 4
+      entities:
+        - entity: SENSORPREFIX_lukemattomat
+          name: Viestit
+        - entity: SENSORPREFIX_poissaolot
+          name: Poissa
+        - entity: SENSORPREFIX_myohastymiset
+          name: Myöhässä
+        - entity: SENSORPREFIX_kehut
+          name: Kehut
+    - type: markdown
+      content: >
+        **{{ states('SENSORPREFIX_oppilas') }}**
+
+        Tänään: {{ states('SENSORPREFIX_tanaan') }}
+
+        Seuraava tunti: {{ states('SENSORPREFIX_seuraava_tunti') }}
+
+        Seuraava koe: {{ states('SENSORPREFIX_seuraava_koe') }}
+    - type: entities
+      title: Viestit
+      entities:
+        - entity: SENSORPREFIX_viimeisin_viesti
+```
