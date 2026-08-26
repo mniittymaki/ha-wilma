@@ -12,6 +12,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     CONF_CHILD_ID,
     CONF_CHILD_NAME,
+    CONF_CHILDREN,
     CONF_PASSWORD,
     CONF_SCAN_INTERVAL,
     CONF_URL,
@@ -35,7 +36,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 
 class WilmaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -46,6 +47,8 @@ class WilmaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             url = user_input[CONF_URL].rstrip("/")
             username = user_input[CONF_USERNAME].strip()
+            await self.async_set_unique_id(f"{url}:{username.lower()}")
+            self._abort_if_unique_id_configured()
             session = async_get_clientsession(self.hass)
             client = WilmaClient(url, session=session, headless=True)
             try:
@@ -64,36 +67,24 @@ class WilmaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
                 children = await fetch_children(session, url, getattr(client, "user_id", None))
                 self._children = {child.child_id: child.name for child in children}
-                if len(self._children) > 1:
-                    return await self.async_step_child()
-                if self._children:
-                    child_id, child_name = next(iter(self._children.items()))
-                    return await self._async_create(child_id, child_name)
-                return await self._async_create("", username)
+                return await self._async_create()
 
         return self.async_show_form(step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors)
 
-    async def async_step_child(self, user_input: dict[str, Any] | None = None):
-        if user_input is not None:
-            child_id = user_input[CONF_CHILD_ID]
-            return await self._async_create(child_id, self._children.get(child_id, child_id))
-        return self.async_show_form(
-            step_id="child",
-            data_schema=vol.Schema({vol.Required(CONF_CHILD_ID): vol.In(self._children)}),
-        )
-
-    async def _async_create(self, child_id: str, child_name: str):
-        url = self._data[CONF_URL]
-        username = self._data[CONF_USERNAME]
-        unique = f"{url}:{username.lower()}:{child_id or 'default'}"
-        await self.async_set_unique_id(unique)
-        self._abort_if_unique_id_configured()
-        title = f"Wilma ({child_name})" if child_name else f"Wilma ({username})"
+    async def _async_create(self):
+        kids = [{"id": cid, "name": name} for cid, name in self._children.items()]
+        first_id = kids[0]["id"] if kids else ""
+        first_name = kids[0]["name"] if kids else self._data[CONF_USERNAME]
+        if len(kids) > 1:
+            title = f"Wilma ({len(kids)} lasta)"
+        else:
+            title = f"Wilma ({first_name})"
         return self.async_create_entry(
             title=title,
             data={
                 **self._data,
-                CONF_CHILD_ID: child_id,
-                CONF_CHILD_NAME: child_name,
+                CONF_CHILD_ID: first_id,
+                CONF_CHILD_NAME: first_name,
+                CONF_CHILDREN: kids,
             },
         )

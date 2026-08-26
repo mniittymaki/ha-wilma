@@ -7,5 +7,5 @@
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "requirements": ["wilhelmina>=0.1.9"],
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

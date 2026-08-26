@@ -12,30 +12,38 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import lessons_for_day, next_lesson, parse_date
 from .const import CONF_CHILD_ID, CONF_CHILD_NAME, DOMAIN, TIMEZONE
-from .coordinator import WilmaCoordinator, WilmaData
+from .coordinator import WilmaCoordinator, WilmaData, children_from_entry
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator: WilmaCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            StatusSensor(coordinator, entry),
-            UnreadSensor(coordinator, entry),
-            LatestMessageSensor(coordinator, entry),
-            MessageCountSensor(coordinator, entry),
-            AbsenceSensor(coordinator, entry),
-            LateSensor(coordinator, entry),
-            PositiveSensor(coordinator, entry),
-            LatestNoteSensor(coordinator, entry),
-            TodaySensor(coordinator, entry),
-            NextLessonSensor(coordinator, entry),
-            HomeworkSensor(coordinator, entry),
-            ExamSensor(coordinator, entry),
-            GradeSensor(coordinator, entry),
-            NewsSensor(coordinator, entry),
-            CourseSensor(coordinator, entry),
-        ]
-    )
+    entities: list = [
+        UnreadSensor(coordinator, entry),
+        LatestMessageSensor(coordinator, entry),
+        MessageCountSensor(coordinator, entry),
+    ]
+    kids = children_from_entry(entry)
+    if not kids:
+        kids = [{"id": entry.data.get(CONF_CHILD_ID) or "", "name": entry.data.get(CONF_CHILD_NAME) or entry.title}]
+    for kid in kids:
+        cid, cname = kid["id"], kid["name"]
+        entities.extend(
+            [
+                StatusSensor(coordinator, entry, cid, cname),
+                AbsenceSensor(coordinator, entry, cid, cname),
+                LateSensor(coordinator, entry, cid, cname),
+                PositiveSensor(coordinator, entry, cid, cname),
+                LatestNoteSensor(coordinator, entry, cid, cname),
+                TodaySensor(coordinator, entry, cid, cname),
+                NextLessonSensor(coordinator, entry, cid, cname),
+                HomeworkSensor(coordinator, entry, cid, cname),
+                ExamSensor(coordinator, entry, cid, cname),
+                GradeSensor(coordinator, entry, cid, cname),
+                NewsSensor(coordinator, entry, cid, cname),
+                CourseSensor(coordinator, entry, cid, cname),
+            ]
+        )
+    async_add_entities(entities)
 
 
 def _join(*parts: str) -> str:
@@ -45,16 +53,24 @@ def _join(*parts: str) -> str:
 class Base(CoordinatorEntity[WilmaCoordinator], SensorEntity):
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator: WilmaCoordinator, entry: ConfigEntry, uid: str) -> None:
+    def __init__(
+        self,
+        coordinator: WilmaCoordinator,
+        entry: ConfigEntry,
+        uid: str,
+        child_id: str | None = None,
+        child_name: str | None = None,
+    ) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_{uid}"
         self._entry = entry
-        child = entry.data.get(CONF_CHILD_NAME) or entry.title
+        self._child_id = child_id or ""
+        suffix = f"_{child_id}" if child_id else ""
+        self._attr_unique_id = f"{entry.entry_id}_{uid}{suffix}"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": child,
+            "identifiers": {(DOMAIN, f"{entry.entry_id}:{child_id}" if child_id else entry.entry_id)},
+            "name": child_name or entry.title,
             "manufacturer": "Visma",
-            "model": entry.data.get(CONF_CHILD_ID) or "Wilma",
+            "model": child_id or "Wilma",
         }
 
     @property
@@ -63,15 +79,19 @@ class Base(CoordinatorEntity[WilmaCoordinator], SensorEntity):
 
     @property
     def school(self):
-        return None if not self.data else self.data.school
+        if not self.data:
+            return None
+        if self._child_id and self.data.schools:
+            return self.data.schools.get(self._child_id) or self.data.school
+        return self.data.school
 
 
 class StatusSensor(Base):
     _attr_name = "Oppilas"
     _attr_icon = "mdi:account-school"
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "student")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "student", child_id, child_name)
 
     @property
     def native_value(self) -> str:
@@ -86,8 +106,8 @@ class StatusSensor(Base):
         if not school:
             return {}
         return {
-            "child": self._entry.data.get(CONF_CHILD_NAME),
-            "child_id": self._entry.data.get(CONF_CHILD_ID),
+            "child": self.school.child_name if self.school else None,
+            "child_id": self._child_id or self._entry.data.get(CONF_CHILD_ID),
             "school": school.school_name,
             "class": school.class_name,
             "children": ", ".join(f"{c.name or c.user_id}" for c in school.children),
@@ -170,8 +190,8 @@ class AbsenceSensor(Base):
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "absences")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "absences", child_id, child_name)
 
     @property
     def native_value(self) -> int:
@@ -193,8 +213,8 @@ class LateSensor(Base):
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "late")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "late", child_id, child_name)
 
     @property
     def native_value(self) -> int:
@@ -216,8 +236,8 @@ class PositiveSensor(Base):
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "positives")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "positives", child_id, child_name)
 
     @property
     def native_value(self) -> int:
@@ -237,8 +257,8 @@ class LatestNoteSensor(Base):
     _attr_name = "Viimeisin tuntimerkintä"
     _attr_icon = "mdi:notebook"
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "latest_note")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "latest_note", child_id, child_name)
 
     @property
     def native_value(self) -> str:
@@ -262,8 +282,8 @@ class TodaySensor(Base):
     _attr_name = "Tänään"
     _attr_icon = "mdi:calendar-today"
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "today")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "today", child_id, child_name)
 
     def _today(self):
         if not self.school:
@@ -290,8 +310,8 @@ class NextLessonSensor(Base):
     _attr_name = "Seuraava tunti"
     _attr_icon = "mdi:calendar-clock"
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "next_lesson")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "next_lesson", child_id, child_name)
 
     @property
     def native_value(self) -> str:
@@ -325,8 +345,8 @@ class HomeworkSensor(Base):
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "homework")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "homework", child_id, child_name)
 
     @property
     def native_value(self) -> int:
@@ -346,8 +366,8 @@ class ExamSensor(Base):
     _attr_name = "Seuraava koe"
     _attr_icon = "mdi:file-document-edit"
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "exam")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "exam", child_id, child_name)
 
     def _upcoming(self):
         today = datetime.now(ZoneInfo(TIMEZONE)).date()
@@ -381,8 +401,8 @@ class GradeSensor(Base):
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "grades")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "grades", child_id, child_name)
 
     @property
     def native_value(self) -> int:
@@ -402,8 +422,8 @@ class NewsSensor(Base):
     _attr_name = "Tiedote"
     _attr_icon = "mdi:bullhorn"
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "news")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "news", child_id, child_name)
 
     @property
     def native_value(self) -> str:
@@ -426,8 +446,8 @@ class CourseSensor(Base):
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator, entry):
-        super().__init__(coordinator, entry, "courses")
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "courses", child_id, child_name)
 
     @property
     def native_value(self) -> int:

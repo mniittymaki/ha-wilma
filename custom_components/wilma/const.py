@@ -1,5 +1,5 @@
 DOMAIN = "wilma"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_URL = "https://helsinki.inschool.fi"
 DEFAULT_SCAN_INTERVAL = 300
 
@@ -9,6 +9,7 @@ CONF_PASSWORD = "password"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_CHILD_ID = "child_id"
 CONF_CHILD_NAME = "child_name"
+CONF_CHILDREN = "children"
 
 TIMEZONE = "Europe/Helsinki"
 

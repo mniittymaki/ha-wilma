@@ -12,14 +12,18 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import parse_date, parse_time
 from .const import DOMAIN, TIMEZONE
-from .coordinator import WilmaCoordinator
+from .coordinator import WilmaCoordinator, children_from_entry
 
 _TZ = ZoneInfo(TIMEZONE)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator: WilmaCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([WilmaCalendar(coordinator, entry)])
+    kids = children_from_entry(entry)
+    if not kids:
+        async_add_entities([WilmaCalendar(coordinator, entry)])
+        return
+    async_add_entities([WilmaCalendar(coordinator, entry, kid["id"], kid["name"]) for kid in kids])
 
 
 class WilmaCalendar(CoordinatorEntity[WilmaCoordinator], CalendarEntity):
@@ -27,14 +31,22 @@ class WilmaCalendar(CoordinatorEntity[WilmaCoordinator], CalendarEntity):
     _attr_name = "Kalenteri"
     _attr_icon = "mdi:calendar-school"
 
-    def __init__(self, coordinator: WilmaCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        coordinator: WilmaCoordinator,
+        entry: ConfigEntry,
+        child_id: str | None = None,
+        child_name: str | None = None,
+    ) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_calendar"
+        self._child_id = child_id or ""
+        suffix = f"_{child_id}" if child_id else ""
+        self._attr_unique_id = f"{entry.entry_id}_calendar{suffix}"
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
+            "identifiers": {(DOMAIN, f"{entry.entry_id}:{child_id}" if child_id else entry.entry_id)},
+            "name": child_name or entry.title,
             "manufacturer": "Visma",
-            "model": "Wilma",
+            "model": child_id or "Wilma",
         }
 
     @property
@@ -51,7 +63,7 @@ class WilmaCalendar(CoordinatorEntity[WilmaCoordinator], CalendarEntity):
         data = self.coordinator.data
         if not data:
             return []
-        school = data.school
+        school = data.schools.get(self._child_id) if self._child_id and data.schools else data.school
         events: list[CalendarEvent] = []
 
         cursor = start

@@ -1,7 +1,8 @@
-"""Wilma coordinator."""
+"""Wilma coordinator — one login per guardian account."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from datetime import timedelta
 import logging
 
@@ -18,6 +19,7 @@ from .const import (
     BROWSER_HEADERS,
     CONF_CHILD_ID,
     CONF_CHILD_NAME,
+    CONF_CHILDREN,
     CONF_PASSWORD,
     CONF_SCAN_INTERVAL,
     CONF_URL,
@@ -29,6 +31,25 @@ from .models import SchoolData
 from .roles import switch_child
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def account_key(entry: ConfigEntry) -> str:
+    return f"{entry.data[CONF_URL]}:{entry.data[CONF_USERNAME].lower()}"
+
+
+def children_from_entry(entry: ConfigEntry) -> list[dict[str, str]]:
+    raw = entry.data.get(CONF_CHILDREN)
+    if isinstance(raw, list) and raw:
+        out = []
+        for item in raw:
+            if isinstance(item, dict) and item.get("id"):
+                out.append({"id": str(item["id"]), "name": str(item.get("name") or item["id"])})
+        if out:
+            return out
+    child_id = entry.data.get(CONF_CHILD_ID) or ""
+    if child_id:
+        return [{"id": str(child_id), "name": str(entry.data.get(CONF_CHILD_NAME) or child_id)}]
+    return []
 
 
 @dataclass
@@ -47,6 +68,14 @@ class WilmaData:
     messages: list[WilmaMessage]
     latest: WilmaMessage | None
     school: SchoolData
+    schools: dict[str, SchoolData] = field(default_factory=dict)
+
+
+def _account_lock(hass: HomeAssistant, key: str) -> asyncio.Lock:
+    store = hass.data.setdefault(DOMAIN, {}).setdefault("_locks", {})
+    if key not in store:
+        store[key] = asyncio.Lock()
+    return store[key]
 
 
 class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
@@ -73,12 +102,6 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
     async def async_login(self) -> None:
         assert self.client is not None
         await self.client.login(self.entry.data[CONF_USERNAME], self.entry.data[CONF_PASSWORD])
-        child_id = self.entry.data.get(CONF_CHILD_ID)
-        if child_id and self._session:
-            try:
-                await switch_child(self._session, self.entry.data[CONF_URL], child_id)
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Wilma role switch skipped: %s", err)
         self._logged_in = True
 
     async def _fetch_messages(self):
@@ -87,7 +110,9 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
             if not self._logged_in:
                 await self.async_login()
             return await self.client.get_messages()
-        except AuthenticationError:
+        except AuthenticationError as err:
+            if _transient(err):
+                raise
             self._logged_in = False
             await self.async_login()
             return await self.client.get_messages()
@@ -95,46 +120,58 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
     async def _async_update_data(self) -> WilmaData:
         assert self.client is not None
         assert self._session is not None
-        try:
-            raw = await self._fetch_messages()
-        except AuthenticationError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
-        except WilmaError as err:
-            raise UpdateFailed(str(err)) from err
-
-        messages = [
-            WilmaMessage(
-                id=int(getattr(msg, "id", 0) or 0),
-                subject=str(getattr(msg, "subject", "") or ""),
-                sender=str(getattr(msg, "sender", "") or ""),
-                timestamp=str(getattr(msg, "timestamp", "") or ""),
-                unread=bool(getattr(msg, "unread", False)),
-            )
-            for msg in raw
-        ]
-        unread_msgs = [msg for msg in messages if msg.unread]
-
-        school = SchoolData()
-        child_id = self.entry.data.get(CONF_CHILD_ID) or getattr(self.client, "user_id", None)
-        if child_id:
+        lock = _account_lock(self.hass, account_key(self.entry))
+        async with lock:
             try:
-                school = await load_school(self._session, self.entry.data[CONF_URL], str(child_id))
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Wilma school fetch failed: %s", err)
-                school.probes.append(f"load_school ERR {err}")
-        else:
-            school.probes.append("no child_id or user_id")
-        if self.entry.data.get(CONF_CHILD_NAME):
-            school.child_name = self.entry.data[CONF_CHILD_NAME]
+                raw = await self._fetch_messages()
+            except AuthenticationError as err:
+                if _transient(err):
+                    raise UpdateFailed(f"Wilma temporarily unavailable: {err}") from err
+                raise ConfigEntryAuthFailed(str(err)) from err
+            except WilmaError as err:
+                raise UpdateFailed(str(err)) from err
 
-        self._notify_new(unread_msgs)
-        return WilmaData(
-            unread=len(unread_msgs),
-            count=len(messages),
-            messages=messages[:20],
-            latest=messages[0] if messages else None,
-            school=school,
-        )
+            messages = [
+                WilmaMessage(
+                    id=int(getattr(msg, "id", 0) or 0),
+                    subject=str(getattr(msg, "subject", "") or ""),
+                    sender=str(getattr(msg, "sender", "") or ""),
+                    timestamp=str(getattr(msg, "timestamp", "") or ""),
+                    unread=bool(getattr(msg, "unread", False)),
+                )
+                for msg in raw
+            ]
+            unread_msgs = [msg for msg in messages if msg.unread]
+
+            schools: dict[str, SchoolData] = {}
+            kids = children_from_entry(self.entry)
+            if not kids:
+                uid = getattr(self.client, "user_id", None)
+                if uid:
+                    kids = [{"id": str(uid), "name": str(uid)}]
+            for index, kid in enumerate(kids):
+                if index:
+                    await asyncio.sleep(1)
+                try:
+                    await switch_child(self._session, self.entry.data[CONF_URL], kid["id"])
+                    school = await load_school(self._session, self.entry.data[CONF_URL], kid["id"])
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning("Wilma school fetch failed for %s: %s", kid["id"], err)
+                    school = SchoolData()
+                    school.probes.append(f"load_school ERR {err}")
+                school.child_name = kid["name"]
+                schools[kid["id"]] = school
+
+            first = next(iter(schools.values()), SchoolData())
+            self._notify_new(unread_msgs)
+            return WilmaData(
+                unread=len(unread_msgs),
+                count=len(messages),
+                messages=messages[:20],
+                latest=messages[0] if messages else None,
+                school=first,
+                schools=schools,
+            )
 
     def _notify_new(self, unread_msgs: list[WilmaMessage]) -> None:
         current = {msg.id for msg in unread_msgs if msg.id}
@@ -158,3 +195,8 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
                     blocking=False,
                 )
             )
+
+
+def _transient(err: Exception) -> bool:
+    text = str(err).lower()
+    return any(token in text for token in ("521", "502", "503", "504", "429", "timeout", "temporar"))

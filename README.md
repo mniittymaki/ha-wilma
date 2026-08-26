@@ -6,8 +6,9 @@ It logs in with a guardian account, reads messages through **Wilhelmina**, and
 reads timetable / homework / exams / lesson notes from the same browser session
 (no Visma developer API key).
 
-Default tenant in the config flow is Helsinki: `https://helsinki.inschool.fi`
-Same flow works on other Visma schools — confirmed on Kaarina (`https://kaarina.inschool.fi`).
+Default tenant in the config flow is Helsinki: `https://helsinki.inschool.fi`.
+Other Visma tenants use the same flow — confirmed working on Kaarina
+(`https://kaarina.inschool.fi`).
 
 > Not affiliated with Visma or Wilma. Endpoints outside `/messages` are
 > unofficial and can change when Wilma updates.
@@ -76,18 +77,18 @@ Works on Container/Docker HA. No Supervisor add-on store required.
 
 ## Two children
 
-Wilma uses one guardian login and several roles (`!04764581`). After login the
-config flow lists `/{id}/roles` and asks which child to bind.
+One guardian login = **one** Home Assistant entry. The integration lists every
+role under `/{id}/roles` and creates a device per child. Messages stay on the
+account (Wilma inbox is shared). Timetable, homework, exams and lesson notes
+are fetched **sequentially** after `GET /!childid` so siblings do not share
+the last child's overview.
 
-Add the integration **again** with the same username to set up the second child.
-Unique id is `url:username:child_id`, so both entries are allowed.
+Do **not** add the same username three times. Wilma allows one session per
+account; parallel logins return `Failed to get token: 521` and Home Assistant
+will keep reloading.
 
-Each entry is its own device (`Wilma (Name)`). Before every poll the
-integration switches role with `GET /!childid` and then reads that child's
-overview.
-
-Both entries share Home Assistant's cookie jar. Stagger scan intervals (300 s
-and 330 s) if polls overlap.
+If you already added one entry per child: delete extras, keep/re-add a single
+Wilma integration.
 
 ## Limits
 
