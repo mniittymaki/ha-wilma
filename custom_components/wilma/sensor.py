@@ -326,8 +326,12 @@ class NextLessonSensor(Base):
     def extra_state_attributes(self) -> dict:
         if not self.school:
             return {}
-        attrs = {}
-        for i, lesson in enumerate(self.school.schedule[:16], start=1):
+        attrs = {"lesson_count": len(self.school.schedule)}
+        ordered = sorted(
+            self.school.schedule,
+            key=lambda item: (item.day or 99, item.start or "", item.subject or ""),
+        )
+        for i, lesson in enumerate(ordered[:40], start=1):
             attrs[f"lesson_{i}"] = _join(
                 str(lesson.day) if lesson.day else "",
                 lesson.start,
