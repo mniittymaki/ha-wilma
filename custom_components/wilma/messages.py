@@ -230,3 +230,43 @@ async def fetch_messages_html(
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Wilma HTML message fetch failed: %s", err)
     return []
+
+
+async def fetch_messages_json(
+    session: aiohttp.ClientSession, base_url: str, user_id: str
+) -> list[dict]:
+    """Fetch messages from the JSON messages/list endpoint (works after role switch)."""
+    base = base_url.rstrip("/")
+    uid = str(user_id).strip("/")
+    url = f"{base}/{uid}/messages/list"
+    try:
+        async with session.get(url, allow_redirects=True) as resp:
+            if resp.status >= 400:
+                return []
+            text = await resp.text()
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                return []
+            items = payload.get("Messages") or payload.get("messages") or []
+            if not isinstance(items, list):
+                return []
+            messages = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                mid = _msg_id(item)
+                if not mid:
+                    continue
+                unread_state = unread_from_item(item)
+                messages.append({
+                    "id": mid,
+                    "subject": str(item.get("Subject") or item.get("subject") or ""),
+                    "sender": str(item.get("Sender") or item.get("sender") or ""),
+                    "timestamp": str(item.get("TimeStamp") or item.get("timestamp") or ""),
+                    "unread": bool(unread_state) if unread_state is not None else False,
+                })
+            return messages
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Wilma JSON message fetch failed: %s", err)
+    return []
