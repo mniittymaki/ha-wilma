@@ -12,7 +12,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import lessons_for_day, next_lesson, parse_date
 from .const import CONF_CHILD_ID, CONF_CHILD_NAME, DOMAIN, TIMEZONE
-from .coordinator import WilmaCoordinator, WilmaData, children_from_entry
+from .coordinator import WilmaCoordinator, WilmaData, children_from_entry, ChildMessages
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
@@ -41,6 +41,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 GradeSensor(coordinator, entry, cid, cname),
                 NewsSensor(coordinator, entry, cid, cname),
                 CourseSensor(coordinator, entry, cid, cname),
+                ChildUnreadSensor(coordinator, entry, cid, cname),
             ]
         )
     async_add_entities(entities)
@@ -469,3 +470,39 @@ class CourseSensor(Base):
             f"course_{i}": _join(item.code, item.name, item.teacher)
             for i, item in enumerate(self.school.courses[:16], start=1)
         }
+
+
+class ChildUnreadSensor(Base):
+    _attr_name = "Uudet viestit"
+    _attr_icon = "mdi:email-alert"
+    _attr_native_unit_of_measurement = "kpl"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "child_unread", child_id, child_name)
+
+    @property
+    def _child_msgs(self) -> ChildMessages | None:
+        if not self.data or not self._child_id:
+            return None
+        return self.data.child_messages.get(self._child_id)
+
+    @property
+    def native_value(self) -> int:
+        cm = self._child_msgs
+        return 0 if not cm else cm.unread
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        cm = self._child_msgs
+        if not cm:
+            return {}
+        attrs: dict = {"count": cm.count, "unread_source": cm.unread_source}
+        if cm.latest:
+            attrs["latest_subject"] = cm.latest.subject
+            attrs["latest_sender"] = cm.latest.sender
+            attrs["latest_time"] = cm.latest.timestamp
+        for i, msg in enumerate(cm.messages[:10], start=1):
+            flag = "● " if msg.unread else ""
+            attrs[f"msg_{i}"] = f"{flag}{msg.subject} · {msg.sender}"
+        return attrs

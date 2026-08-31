@@ -63,6 +63,15 @@ class WilmaMessage:
 
 
 @dataclass
+class ChildMessages:
+    unread: int = 0
+    count: int = 0
+    messages: list[WilmaMessage] = field(default_factory=list)
+    latest: WilmaMessage | None = None
+    unread_source: str = ""
+
+
+@dataclass
 class WilmaData:
     unread: int
     count: int
@@ -70,6 +79,7 @@ class WilmaData:
     latest: WilmaMessage | None
     school: SchoolData
     schools: dict[str, SchoolData] = field(default_factory=dict)
+    child_messages: dict[str, ChildMessages] = field(default_factory=dict)
     unread_source: str = ""
 
 
@@ -168,6 +178,28 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
             self._apply_role()
             return await self.client.get_messages()
 
+    async def _fetch_child_messages(self, child_id: str) -> list[WilmaMessage]:
+        """Fetch messages for a specific child using JSON API with HTML fallback."""
+        assert self._session is not None
+        base = self.entry.data[CONF_URL]
+        messages: list[WilmaMessage] = []
+
+        # Try JSON messages/list (works after switch_child)
+        try:
+            unread_ids, src = await fetch_unread_ids(self._session, base, child_id)
+            html_msgs = await fetch_messages_html(self._session, base, child_id)
+            for m in html_msgs:
+                mid = m["id"]
+                messages.append(WilmaMessage(
+                    id=mid, subject=m["subject"], sender=m["sender"],
+                    timestamp=m["timestamp"],
+                    unread=mid in unread_ids if unread_ids else m["unread"],
+                ))
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Wilma child message fetch failed for %s: %s", child_id, err)
+
+        return messages
+
     async def _async_update_data(self) -> WilmaData:
         assert self.client is not None
         assert self._session is not None
@@ -181,63 +213,10 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
                         raise UpdateFailed(f"Wilma temporarily unavailable: {err}") from err
                     raise ConfigEntryAuthFailed(str(err)) from err
 
-            # Fetch messages — tolerate failure so school data still loads
-            messages: list[WilmaMessage] = []
-            unread_source = "no-role"
-            try:
-                raw = await self._fetch_messages()
-                messages = [
-                    WilmaMessage(
-                        id=int(getattr(msg, "id", 0) or 0),
-                        subject=str(getattr(msg, "subject", "") or ""),
-                        sender=str(getattr(msg, "sender", "") or ""),
-                        timestamp=str(getattr(msg, "timestamp", "") or ""),
-                        unread=bool(getattr(msg, "unread", False)),
-                    )
-                    for msg in raw
-                ]
-            except AuthenticationError as err:
-                if _transient(err):
-                    raise UpdateFailed(f"Wilma temporarily unavailable: {err}") from err
-                raise ConfigEntryAuthFailed(str(err)) from err
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Wilma JSON messages failed, trying HTML: %s", err)
-
-            # HTML fallback when JSON API returns no messages
-            child_id = self.entry.data.get(CONF_CHILD_ID) or getattr(self.client, "user_id", None)
-            if not messages and child_id and self._session:
-                try:
-                    html_msgs = await fetch_messages_html(
-                        self._session, self.entry.data[CONF_URL], str(child_id)
-                    )
-                    messages = [
-                        WilmaMessage(
-                            id=m["id"], subject=m["subject"], sender=m["sender"],
-                            timestamp=m["timestamp"], unread=m["unread"],
-                        )
-                        for m in html_msgs
-                    ]
-                    if messages:
-                        unread_source = "html"
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.debug("Wilma HTML message fallback failed: %s", err)
-
-            # Re-derive unread status since Wilhelmina reports unread=False without Playwright
-            if unread_source != "html" and child_id:
-                try:
-                    unread_ids, unread_source = await fetch_unread_ids(
-                        self._session, self.entry.data[CONF_URL], str(child_id)
-                    )
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.debug("Wilma unread detection failed: %s", err)
-                    unread_ids, unread_source = set(), f"error:{err}"
-                if unread_ids:
-                    for msg in messages:
-                        msg.unread = msg.id in unread_ids
-
-            unread_msgs = [msg for msg in messages if msg.unread]
+            unread_source = ""
 
             schools: dict[str, SchoolData] = {}
+            child_msgs: dict[str, ChildMessages] = {}
             kids = children_from_entry(self.entry)
             if not kids:
                 uid = getattr(self.client, "user_id", None)
@@ -255,16 +234,33 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
                     school.probes.append(f"load_school ERR {err}")
                 school.child_name = kid["name"]
                 schools[kid["id"]] = school
+                # Fetch messages per child
+                kid_messages = await self._fetch_child_messages(kid["id"])
+                kid_unread = [m for m in kid_messages if m.unread]
+                child_msgs[kid["id"]] = ChildMessages(
+                    unread=len(kid_unread),
+                    count=len(kid_messages),
+                    messages=kid_messages[:20],
+                    latest=kid_messages[0] if kid_messages else None,
+                    unread_source=unread_source,
+                )
 
             first = next(iter(schools.values()), SchoolData())
-            self._notify_new(unread_msgs)
+            # Combine all children's unread for the global count
+            all_unread = []
+            all_messages: list[WilmaMessage] = []
+            for cm in child_msgs.values():
+                all_unread.extend(m for m in cm.messages if m.unread)
+                all_messages.extend(cm.messages)
+            self._notify_new(all_unread)
             return WilmaData(
-                unread=len(unread_msgs),
-                count=len(messages),
-                messages=messages[:20],
-                latest=messages[0] if messages else None,
+                unread=len(all_unread),
+                count=sum(cm.count for cm in child_msgs.values()),
+                messages=all_messages[:20],
+                latest=all_messages[0] if all_messages else None,
                 school=first,
                 schools=schools,
+                child_messages=child_msgs,
                 unread_source=unread_source,
             )
 
