@@ -272,7 +272,7 @@ def _hw_from_dict(item: dict, subject: str = "") -> Homework | None:
     )
     if not text:
         return None
-    if DATE_RE.fullmatch(text.strip()):
+    if DATE_RE.fullmatch(text.strip()) or text in ("[]", "()"):
         return None
     subj = _pick(item, SUBJECT_KEYS) or subject
     return Homework(
@@ -459,6 +459,13 @@ def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
         if not source.startswith("attendance"):
             _walk_lessons(payload, data.schedule)
             data.schedule = _dedupe_lessons(data.schedule)
+            if not data.class_name:
+                for slot in payload.get("Schedule") or payload.get("schedule") or []:
+                    if isinstance(slot, dict):
+                        klass = str(slot.get("Class") or "").strip()
+                        if klass:
+                            data.class_name = klass
+                            break
             exam_src = (
                 payload.get("Exams")
                 or payload.get("exams")
@@ -469,6 +476,28 @@ def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
             _walk_exams(exam_src, data.exams, data.grades)
             hw_src = payload.get("Homework") or payload.get("homework") or payload.get("Groups") or payload
             _walk_homework(hw_src, data.homework)
+            # Extract courses from Groups
+            for grp in payload.get("Groups") or payload.get("groups") or []:
+                if not isinstance(grp, dict):
+                    continue
+                cname = _pick(grp, ("CourseName", "courseName", "FullCaption", "Caption"))
+                ccode = _pick(grp, ("CourseCode", "courseCode", "ShortCaption"))
+                teacher = _pick(grp, TEACHER_KEYS)
+                if not teacher:
+                    teachers = grp.get("Teachers") or []
+                    if isinstance(teachers, list) and teachers and isinstance(teachers[0], dict):
+                        t = teachers[0]
+                        teacher = str(t.get("TeacherName") or t.get("LongCaption") or _as_text(t) or "")
+                if cname or ccode:
+                    data.courses.append(Course(
+                        name=cname, code=ccode, teacher=teacher,
+                        start=str(grp.get("StartDate") or ""),
+                        end=str(grp.get("EndDate") or ""),
+                    ))
+                # Extract class name from group Class field
+                klass = str(grp.get("Class") or "").strip()
+                if klass and not data.class_name:
+                    data.class_name = klass
             for item in payload.get("News") or payload.get("news") or []:
                 if isinstance(item, dict):
                     data.news.append(

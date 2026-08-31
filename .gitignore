@@ -3,3 +3,7 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Local debug scripts (contain credentials)
+check_roles.py
+wilma_secrets.env
