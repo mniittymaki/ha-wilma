@@ -171,7 +171,11 @@ class LatestMessageSensor(Base):
     def extra_state_attributes(self) -> dict:
         if not self.data:
             return {}
-        attrs = {"unread": self.data.unread, "count": self.data.count}
+        attrs = {
+            "unread": self.data.unread,
+            "count": self.data.count,
+            "unread_source": self.data.unread_source,
+        }
         if self.data.latest:
             attrs.update(
                 sender=self.data.latest.sender,
