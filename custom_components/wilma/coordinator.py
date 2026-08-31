@@ -27,8 +27,9 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .messages import fetch_messages_html, fetch_unread_ids
 from .models import SchoolData
-from .roles import switch_child
+from .roles import _norm_id, switch_child
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ class WilmaData:
     latest: WilmaMessage | None
     school: SchoolData
     schools: dict[str, SchoolData] = field(default_factory=dict)
+    unread_source: str = ""
 
 
 def _account_lock(hass: HomeAssistant, key: str) -> asyncio.Lock:
@@ -91,6 +93,26 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
     async def async_setup(self) -> None:
         self._session = aiohttp.ClientSession(headers=BROWSER_HEADERS)
         self.client = WilmaClient(self.entry.data[CONF_URL], session=self._session, headless=True)
+        self._pin_role_across_reauth()
+
+    def _pin_role_across_reauth(self) -> None:
+        """Keep `user_id` on this entry's child even when Wilhelmina re-authenticates.
+
+        `_authenticated_request` retries a 403 by calling `login()` again, which
+        rewrites `user_id` back to the guardian role *mid-call* - so re-applying
+        the override before each fetch is not enough, and that poll would report
+        the guardian's inbox. Wrapping login covers the internal retry too.
+        """
+        assert self.client is not None
+        inner_login = self.client.login
+
+        async def login_and_pin(*args, **kwargs):
+            await inner_login(*args, **kwargs)
+            uid = self._child_uid()
+            if uid and self.client is not None:
+                self.client.user_id = uid
+
+        self.client.login = login_and_pin
 
     async def async_shutdown(self) -> None:
         if self._session and not self._session.closed:
@@ -99,9 +121,36 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
         self.client = None
         self._logged_in = False
 
+    def _child_uid(self) -> str:
+        """Normalised role id for the child this entry is configured for."""
+        return _norm_id(self.entry.data.get(CONF_CHILD_ID) or "")
+
+    def _apply_role(self) -> str:
+        """Point the Wilhelmina client at this entry's child.
+
+        `WilmaClient.login()` sets `user_id` from the post-login redirect, i.e.
+        the guardian's default role, and `get_messages()` requests
+        `{base}/{user_id}/messages/list`. Without this override every child
+        entry would read the same inbox. `_authenticated_request` re-runs
+        `login()` on an expired session, resetting the field, so this has to be
+        re-applied before each fetch rather than only at login.
+        """
+        assert self.client is not None
+        uid = self._child_uid()
+        if uid:
+            self.client.user_id = uid
+        return uid or str(getattr(self.client, "user_id", "") or "")
+
     async def async_login(self) -> None:
         assert self.client is not None
         await self.client.login(self.entry.data[CONF_USERNAME], self.entry.data[CONF_PASSWORD])
+        child_id = self.entry.data.get(CONF_CHILD_ID)
+        if child_id and self._session:
+            try:
+                await switch_child(self._session, self.entry.data[CONF_URL], child_id)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Wilma role switch skipped: %s", err)
+        self._apply_role()
         self._logged_in = True
 
     async def _fetch_messages(self):
@@ -109,12 +158,14 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
         try:
             if not self._logged_in:
                 await self.async_login()
+            self._apply_role()
             return await self.client.get_messages()
         except AuthenticationError as err:
             if _transient(err):
                 raise
             self._logged_in = False
             await self.async_login()
+            self._apply_role()
             return await self.client.get_messages()
 
     async def _async_update_data(self) -> WilmaData:
@@ -122,25 +173,68 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
         assert self._session is not None
         lock = _account_lock(self.hass, account_key(self.entry))
         async with lock:
+            if not self._logged_in:
+                try:
+                    await self.async_login()
+                except AuthenticationError as err:
+                    if _transient(err):
+                        raise UpdateFailed(f"Wilma temporarily unavailable: {err}") from err
+                    raise ConfigEntryAuthFailed(str(err)) from err
+
+            # Fetch messages — tolerate failure so school data still loads
+            messages: list[WilmaMessage] = []
+            unread_source = "no-role"
             try:
                 raw = await self._fetch_messages()
+                messages = [
+                    WilmaMessage(
+                        id=int(getattr(msg, "id", 0) or 0),
+                        subject=str(getattr(msg, "subject", "") or ""),
+                        sender=str(getattr(msg, "sender", "") or ""),
+                        timestamp=str(getattr(msg, "timestamp", "") or ""),
+                        unread=bool(getattr(msg, "unread", False)),
+                    )
+                    for msg in raw
+                ]
             except AuthenticationError as err:
                 if _transient(err):
                     raise UpdateFailed(f"Wilma temporarily unavailable: {err}") from err
                 raise ConfigEntryAuthFailed(str(err)) from err
-            except WilmaError as err:
-                raise UpdateFailed(str(err)) from err
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Wilma JSON messages failed, trying HTML: %s", err)
 
-            messages = [
-                WilmaMessage(
-                    id=int(getattr(msg, "id", 0) or 0),
-                    subject=str(getattr(msg, "subject", "") or ""),
-                    sender=str(getattr(msg, "sender", "") or ""),
-                    timestamp=str(getattr(msg, "timestamp", "") or ""),
-                    unread=bool(getattr(msg, "unread", False)),
-                )
-                for msg in raw
-            ]
+            # HTML fallback when JSON API returns no messages
+            child_id = self.entry.data.get(CONF_CHILD_ID) or getattr(self.client, "user_id", None)
+            if not messages and child_id and self._session:
+                try:
+                    html_msgs = await fetch_messages_html(
+                        self._session, self.entry.data[CONF_URL], str(child_id)
+                    )
+                    messages = [
+                        WilmaMessage(
+                            id=m["id"], subject=m["subject"], sender=m["sender"],
+                            timestamp=m["timestamp"], unread=m["unread"],
+                        )
+                        for m in html_msgs
+                    ]
+                    if messages:
+                        unread_source = "html"
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Wilma HTML message fallback failed: %s", err)
+
+            # Re-derive unread status since Wilhelmina reports unread=False without Playwright
+            if unread_source != "html" and child_id:
+                try:
+                    unread_ids, unread_source = await fetch_unread_ids(
+                        self._session, self.entry.data[CONF_URL], str(child_id)
+                    )
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Wilma unread detection failed: %s", err)
+                    unread_ids, unread_source = set(), f"error:{err}"
+                if unread_ids:
+                    for msg in messages:
+                        msg.unread = msg.id in unread_ids
+
             unread_msgs = [msg for msg in messages if msg.unread]
 
             schools: dict[str, SchoolData] = {}
@@ -171,6 +265,7 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
                 latest=messages[0] if messages else None,
                 school=first,
                 schools=schools,
+                unread_source=unread_source,
             )
 
     def _notify_new(self, unread_msgs: list[WilmaMessage]) -> None:
