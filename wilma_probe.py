@@ -16,6 +16,8 @@ Usage:
 
 Credentials come from a prompt, or from WILMA_USER / WILMA_PASS if set.
 Prefer the prompt: environment variables leak into shell history.
+Optional child labels come from WILMA_CHILDREN as !slug:Name pairs, separated
+by commas.
 """
 
 import argparse
@@ -35,17 +37,19 @@ except ImportError:
 
 DEFAULT_CITY = "espoo"
 
-# Known role slugs for this account, for readable output. Discovery still
-# runs normally; anything found but not listed here prints as the bare slug.
-SLUG_NAMES = {
-    "!04307528": "Ella",
-    "!04307529": "Aaro",
-    "!04265932": "Sasu",
-}
+
+def child_names() -> dict[str, str]:
+    """Read optional role labels from WILMA_CHILDREN."""
+    names: dict[str, str] = {}
+    for item in os.environ.get("WILMA_CHILDREN", "").split(","):
+        slug, separator, name = item.strip().partition(":")
+        if slug.startswith("!") and separator and name.strip():
+            names[slug] = name.strip()
+    return names
 
 
-def label(slug):
-    name = SLUG_NAMES.get(slug)
+def label(slug, names):
+    name = names.get(slug)
     return f"{name} ({slug})" if name else slug
 
 # Endpoints to probe under each role slug. Availability varies by Wilma
@@ -321,6 +325,7 @@ def main():
     args = ap.parse_args()
 
     load_secrets_file()
+    names = child_names()
 
     city = args.city or os.environ.get("WILMA_CITY") or DEFAULT_CITY
     base = f"https://{city}.inschool.fi"
@@ -339,22 +344,19 @@ def main():
 
     print(f"\n=== {len(slugs)} role slug(s) ===")
     for s in slugs:
-        print(f"  {label(s)}")
+        print(f"  {label(s, names)}")
 
-    unknown = [s for s in slugs if s not in SLUG_NAMES]
+    unknown = [s for s in slugs if s not in names]
     if unknown:
-        print(f"\n  note: {len(unknown)} slug(s) not in SLUG_NAMES: "
+        print(f"\n  note: {len(unknown)} slug(s) without a WILMA_CHILDREN label: "
               f"{', '.join(unknown)}")
-    missing = [s for s in SLUG_NAMES if s not in slugs]
-    if missing:
-        print(f"  note: expected but not discovered: {', '.join(missing)}")
 
     # results[endpoint][slug] = (status, fingerprint, summary)
     results = {name: {} for name, _ in ENDPOINTS}
 
     for slug in slugs:
-        print(f"\n=== {label(slug)} ===")
-        who = SLUG_NAMES.get(slug, slug.lstrip("!"))
+        print(f"\n=== {label(slug, names)} ===")
+        who = names.get(slug, slug.lstrip("!"))
         role_status = switch_role(session, base, slug)
         print(f"  role switch: {role_status}")
         for name, path in ENDPOINTS:
@@ -400,7 +402,7 @@ def main():
             # Partial collision: name who collided, that is the useful detail.
             groups = {}
             for slug, (_, fp, _) in per_slug.items():
-                groups.setdefault(fp, []).append(SLUG_NAMES.get(slug, slug))
+                groups.setdefault(fp, []).append(names.get(slug, slug))
             collided = [g for g in groups.values() if len(g) > 1]
             verdict = (f"{len(set(fps))} distinct across {len(fps)} - "
                        f"same data: {'; '.join(' + '.join(g) for g in collided)}")

@@ -357,9 +357,19 @@ class HomeworkSensor(Base):
     def __init__(self, coordinator, entry, child_id=None, child_name=None):
         super().__init__(coordinator, entry, "homework", child_id, child_name)
 
+    def _current_homework(self):
+        today = datetime.now(ZoneInfo(TIMEZONE)).date()
+        homework = []
+        for item in self.school.homework if self.school else []:
+            parsed = parse_date(item.date)
+            if parsed is None or parsed >= today:
+                homework.append(item)
+        homework.sort(key=lambda item: parse_date(item.date) or datetime.max.date())
+        return homework
+
     @property
     def native_value(self) -> int:
-        return 0 if not self.school else len(self.school.homework)
+        return len(self._current_homework())
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -367,7 +377,7 @@ class HomeworkSensor(Base):
             return {}
         return {
             f"hw_{i}": _join(item.date, item.subject, item.text)
-            for i, item in enumerate(self.school.homework[:12], start=1)
+            for i, item in enumerate(self._current_homework()[:12], start=1)
         }
 
 
@@ -415,16 +425,19 @@ class GradeSensor(Base):
 
     @property
     def native_value(self) -> int:
-        return 0 if not self.school else len(self.school.grades)
+        return 0 if not self.school else len(self.school.unread_grades)
 
     @property
     def extra_state_attributes(self) -> dict:
         if not self.school:
             return {}
-        return {
-            f"grade_{i}": _join(item.date, item.subject, item.grade, item.name)
-            for i, item in enumerate(self.school.grades[:12], start=1)
+        attrs = {
+            "total_grades": len(self.school.grades),
+            "unread_grades": len(self.school.unread_grades),
         }
+        for i, item in enumerate(self.school.unread_grades[:12], start=1):
+            attrs[f"grade_{i}"] = _join(item.date, item.subject, item.grade, item.name)
+        return attrs
 
 
 class NewsSensor(Base):

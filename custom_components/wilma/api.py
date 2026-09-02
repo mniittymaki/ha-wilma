@@ -229,6 +229,7 @@ def _exam_from_dict(item: dict) -> Exam | None:
     subject = _pick(item, SUBJECT_KEYS) or _as_text(item.get("ShortCaption") or item.get("shortCaption"))
     topic = _pick(item, ("Topic", "topic", "Description", "description", "Summary", "summary"))
     grade = _pick(item, ("Grade", "grade", "Mark", "mark"))
+    seen = item.get("ExamSeen") not in (None, "")
     teacher = _pick(item, TEACHER_KEYS)
     if not date_s:
         return None
@@ -236,7 +237,15 @@ def _exam_from_dict(item: dict) -> Exam | None:
         return None
     if "Start" in item and "End" in item and not (name or topic or grade):
         return None
-    return Exam(subject=subject, date=date_s, name=name, grade=grade, teacher=teacher, topic=topic)
+    return Exam(
+        subject=subject,
+        date=date_s,
+        name=name,
+        grade=grade,
+        seen=seen,
+        teacher=teacher,
+        topic=topic,
+    )
 
 
 def _walk_exams(obj: Any, exams: list[Exam], grades: list[Exam], depth: int = 0) -> None:
