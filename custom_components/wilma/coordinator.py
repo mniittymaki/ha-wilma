@@ -41,15 +41,19 @@ def account_key(entry: ConfigEntry) -> str:
 def children_from_entry(entry: ConfigEntry) -> list[dict[str, str]]:
     raw = entry.data.get(CONF_CHILDREN)
     if isinstance(raw, list) and raw:
-        out = []
+        found: dict[str, str] = {}
         for item in raw:
             if isinstance(item, dict) and item.get("id"):
-                out.append({"id": str(item["id"]), "name": str(item.get("name") or item["id"])})
+                child_id = _norm_id(str(item["id"]))
+                if child_id:
+                    name = str(item.get("name") or child_id)
+                    found[child_id] = name if name != child_id else found.get(child_id, name)
+        out = [{"id": child_id, "name": name} for child_id, name in found.items()]
         if out:
             return out
-    child_id = entry.data.get(CONF_CHILD_ID) or ""
+    child_id = _norm_id(entry.data.get(CONF_CHILD_ID) or "")
     if child_id:
-        return [{"id": str(child_id), "name": str(entry.data.get(CONF_CHILD_NAME) or child_id)}]
+        return [{"id": child_id, "name": str(entry.data.get(CONF_CHILD_NAME) or child_id)}]
     return []
 
 

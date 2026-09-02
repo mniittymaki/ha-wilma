@@ -245,6 +245,67 @@ def probe(session, base, path, dump_to=None, tag=""):
     return r.status_code, fingerprint, summarise(payload)
 
 
+def switch_role(session, base, slug):
+    """Activate a child role; Espoo requires this before messages/list."""
+    try:
+        response = session.get(f"{base}/{slug}/", timeout=20, allow_redirects=True)
+        return response.status_code
+    except requests.RequestException as exc:
+        return f"error: {exc}"
+
+
+def integration_summary(session, base, slug):
+    """Print the fields the Home Assistant integration consumes."""
+    summary = []
+
+    try:
+        response = session.get(f"{base}/{slug}/messages/list", timeout=20)
+        payload = response.json()
+        messages = payload.get("Messages") or payload.get("messages") or []
+        statuses = {}
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            status = message.get("Status")
+            statuses[repr(status)] = statuses.get(repr(status), 0) + 1
+        unread = sum(
+            1
+            for message in messages
+            if isinstance(message, dict) and message.get("Status") in (1, "1")
+        )
+        summary.append(
+            f"messages/list: {len(messages)} total, {unread} unread "
+            f"(Status: {statuses})"
+        )
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
+        summary.append(f"messages/list: unavailable ({exc})")
+
+    try:
+        response = session.get(f"{base}/{slug}/overview?format=json", timeout=20)
+        payload = response.json()
+        schedule = payload.get("Schedule") or []
+        groups = payload.get("Groups") or []
+        exams = payload.get("Exams") or []
+        homework = sum(
+            len(group.get("Homework") or [])
+            for group in groups
+            if isinstance(group, dict)
+        )
+        grades = sum(
+            1
+            for exam in exams
+            if isinstance(exam, dict) and exam.get("Grade") not in (None, "")
+        )
+        summary.append(
+            f"overview: {len(schedule)} lessons, {len(groups)} courses, "
+            f"{homework} homework, {len(exams)} exams, {grades} graded"
+        )
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
+        summary.append(f"overview: unavailable ({exc})")
+
+    return summary
+
+
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
@@ -294,6 +355,8 @@ def main():
     for slug in slugs:
         print(f"\n=== {label(slug)} ===")
         who = SLUG_NAMES.get(slug, slug.lstrip("!"))
+        role_status = switch_role(session, base, slug)
+        print(f"  role switch: {role_status}")
         for name, path in ENDPOINTS:
             status, fp, summary = probe(
                 session, base, f"/{slug}{path}",
@@ -302,6 +365,9 @@ def main():
             results[name][slug] = (status, fp, summary)
             fp_col = fp or "-"
             print(f"  {name:<11} {str(status):<4} {fp_col:<13} {summary}")
+        print("\n  integration data:")
+        for line in integration_summary(session, base, slug):
+            print(f"    {line}")
 
     if args.unscoped:
         print("\n=== no slug (guardian root) ===")
