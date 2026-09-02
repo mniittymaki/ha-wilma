@@ -49,6 +49,7 @@ class Exam:
     date: str = ""
     name: str = ""
     grade: str = ""
+    seen: bool = False
     teacher: str = ""
     topic: str = ""
 
@@ -102,6 +103,10 @@ class SchoolData:
     @property
     def positives(self) -> list[LessonNote]:
         return [n for n in self.notes if _match(n, POSITIVE)]
+
+    @property
+    def unread_grades(self) -> list[Exam]:
+        return [grade for grade in self.grades if not grade.seen]
 
 
 ABSENCE = (

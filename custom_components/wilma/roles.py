@@ -19,7 +19,7 @@ class WilmaChild:
 
 
 def _norm_id(raw: str) -> str:
-    raw = str(raw).strip()
+    raw = str(raw).strip().strip("/")
     if not raw:
         return ""
     if raw.startswith("!"):
