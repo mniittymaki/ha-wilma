@@ -5,7 +5,6 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 import logging
-import re
 
 import aiohttp
 from wilhelmina import AuthenticationError, WilmaClient, WilmaError
@@ -357,20 +356,18 @@ def _transient(err: Exception) -> bool:
 
 
 def _stale_school(school: SchoolData) -> bool:
-    """True when probes show a login collision or a dead Wilma session."""
-    blob = " ".join(school.probes)
-    if "LOGIN_COLLISION" in blob:
-        return True
-    low = blob.lower()
-    markers = (
-        "error-access-denied",
-        "päällekkäinen",
-        "session expired",
-        "sessio vanhent",
-        "not authenticated",
-        "unauthorized",
-        "kirjaudu",
-    )
-    if any(token in low for token in markers):
-        return True
-    return bool(re.search(r"\b(401|403)\b", blob))
+    """True when probes show a login collision or a dead Wilma session.
+
+    403 on exams/groups/choices/news/list is a permission miss on some
+    tenants, not a dead session. Only overview 401/403 counts as auth.
+    """
+    for probe in school.probes:
+        if "LOGIN_COLLISION" in probe:
+            return True
+        low = probe.lower()
+        if "päällekkäinen" in low or "session expired" in low:
+            return True
+        parts = probe.split()
+        if len(parts) >= 2 and parts[0] == "overview" and parts[1] in {"401", "403"}:
+            return True
+    return False
