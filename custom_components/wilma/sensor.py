@@ -39,6 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 NextLessonSensor(coordinator, entry, cid, cname),
                 HomeworkSensor(coordinator, entry, cid, cname),
                 HomeworkPastSensor(coordinator, entry, cid, cname),
+                HomeworkAllSensor(coordinator, entry, cid, cname),
                 ExamSensor(coordinator, entry, cid, cname),
                 GradeSensor(coordinator, entry, cid, cname),
                 NewsSensor(coordinator, entry, cid, cname),
@@ -51,6 +52,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 def _join(*parts: str) -> str:
     return " · ".join(part for part in parts if part)
+
+
+_HW_ATTR_LIMIT = 30
+
+
+def _homework_attrs(items) -> dict:
+    return {
+        f"hw_{i}": _join(item.date, item.subject, item.text)
+        for i, item in enumerate(items[:_HW_ATTR_LIMIT], start=1)
+    }
 
 
 class Base(CoordinatorEntity[WilmaCoordinator], SensorEntity):
@@ -351,7 +362,7 @@ class NextLessonSensor(Base):
 
 
 class HomeworkSensor(Base):
-    _attr_name = "Läksyt"
+    _attr_name = "Aktiiviset läksyt"
     _attr_icon = "mdi:book-education"
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -359,13 +370,10 @@ class HomeworkSensor(Base):
     def __init__(self, coordinator, entry, child_id=None, child_name=None):
         super().__init__(coordinator, entry, "homework", child_id, child_name)
 
-    def _split(self):
-        if not self.school:
-            return [], []
-        return split_homework(self.school.homework, self.school.schedule)
-
     def _current_homework(self):
-        upcoming, _past = self._split()
+        if not self.school:
+            return []
+        upcoming, _past = split_homework(self.school.homework, self.school.schedule)
         return upcoming
 
     @property
@@ -376,10 +384,7 @@ class HomeworkSensor(Base):
     def extra_state_attributes(self) -> dict:
         if not self.school:
             return {}
-        return {
-            f"hw_{i}": _join(item.date, item.subject, item.text)
-            for i, item in enumerate(self._current_homework()[:12], start=1)
-        }
+        return _homework_attrs(self._current_homework())
 
 
 class HomeworkPastSensor(Base):
@@ -405,10 +410,32 @@ class HomeworkPastSensor(Base):
     def extra_state_attributes(self) -> dict:
         if not self.school:
             return {}
-        return {
-            f"hw_{i}": _join(item.date, item.subject, item.text)
-            for i, item in enumerate(self._past_homework()[:12], start=1)
-        }
+        return _homework_attrs(self._past_homework())
+
+
+class HomeworkAllSensor(Base):
+    _attr_name = "Kaikki läksyt"
+    _attr_icon = "mdi:book-multiple"
+    _attr_native_unit_of_measurement = "kpl"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "homework_all", child_id, child_name)
+
+    def _all_homework(self):
+        if not self.school:
+            return []
+        return list(self.school.homework)
+
+    @property
+    def native_value(self) -> int:
+        return len(self._all_homework())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.school:
+            return {}
+        return _homework_attrs(self._all_homework())
 
 
 class ExamSensor(Base):
