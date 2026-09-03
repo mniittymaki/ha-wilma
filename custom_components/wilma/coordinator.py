@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 import logging
+import re
 
 import aiohttp
 from wilhelmina import AuthenticationError, WilmaClient, WilmaError
@@ -29,7 +30,7 @@ from .const import (
 )
 from .messages import fetch_messages_html, fetch_messages_json, fetch_unread_ids
 from .models import SchoolData
-from .roles import _norm_id, switch_child
+from .roles import _is_named_child, _norm_id, switch_child
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +50,9 @@ def children_from_entry(entry: ConfigEntry) -> list[dict[str, str]]:
                     name = str(item.get("name") or child_id)
                     found[child_id] = name if name != child_id else found.get(child_id, name)
         out = [{"id": child_id, "name": name} for child_id, name in found.items()]
+        named = [kid for kid in out if _is_named_child(kid["name"], kid["id"])]
+        if named:
+            return named
         if out:
             return out
     child_id = _norm_id(entry.data.get(CONF_CHILD_ID) or "")
@@ -213,6 +217,44 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
 
         return messages
 
+    async def _load_child_school(self, child_id: str, child_name: str) -> SchoolData | None:
+        """Fetch one child's school pages. Relogin + retry on collision / dead session.
+
+        Returns None when both attempts fail so the caller can keep last data.
+        """
+        assert self._session is not None
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                if attempt:
+                    _LOGGER.info("Wilma relogin before retrying school fetch for %s", child_id)
+                    self._logged_in = False
+                    await self.async_login()
+                await switch_child(self._session, self.entry.data[CONF_URL], child_id)
+                school = await load_school(self._session, self.entry.data[CONF_URL], child_id)
+            except Exception as err:  # noqa: BLE001
+                last_error = err
+                _LOGGER.warning(
+                    "Wilma school fetch failed for %s (attempt %s): %s",
+                    child_id,
+                    attempt + 1,
+                    err,
+                )
+                continue
+            if _stale_school(school):
+                _LOGGER.warning(
+                    "Wilma school session stale for %s (attempt %s): %s",
+                    child_id,
+                    attempt + 1,
+                    school.probes,
+                )
+                continue
+            school.child_name = child_name or school.child_name
+            return school
+        if last_error:
+            _LOGGER.warning("Wilma school fetch gave up for %s: %s", child_id, last_error)
+        return None
+
     async def _async_update_data(self) -> WilmaData:
         assert self.client is not None
         assert self._session is not None
@@ -228,8 +270,10 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
 
             unread_source = ""
 
+            old_schools = dict(self.data.schools) if self.data and self.data.schools else {}
             schools: dict[str, SchoolData] = {}
             child_msgs: dict[str, ChildMessages] = {}
+            failed: list[str] = []
             kids = children_from_entry(self.entry)
             if not kids:
                 uid = getattr(self.client, "user_id", None)
@@ -238,15 +282,16 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
             for index, kid in enumerate(kids):
                 if index:
                     await asyncio.sleep(1)
-                try:
-                    await switch_child(self._session, self.entry.data[CONF_URL], kid["id"])
-                    school = await load_school(self._session, self.entry.data[CONF_URL], kid["id"])
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.warning("Wilma school fetch failed for %s: %s", kid["id"], err)
-                    school = SchoolData()
-                    school.probes.append(f"load_school ERR {err}")
-                school.child_name = kid["name"]
-                schools[kid["id"]] = school
+                school = await self._load_child_school(kid["id"], kid["name"])
+                if school is None:
+                    previous = old_schools.get(kid["id"])
+                    if previous is not None:
+                        _LOGGER.warning("Wilma keeping last school data for %s", kid["id"])
+                        schools[kid["id"]] = previous
+                    else:
+                        failed.append(kid["id"])
+                else:
+                    schools[kid["id"]] = school
                 # Fetch messages per child
                 kid_messages = await self._fetch_child_messages(kid["id"])
                 kid_unread = [m for m in kid_messages if m.unread]
@@ -256,6 +301,11 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
                     messages=kid_messages[:20],
                     latest=kid_messages[0] if kid_messages else None,
                     unread_source=unread_source,
+                )
+
+            if failed and not schools:
+                raise UpdateFailed(
+                    f"Wilma school fetch failed for all children: {', '.join(failed)}"
                 )
 
             first = next(iter(schools.values()), SchoolData())
@@ -304,3 +354,23 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
 def _transient(err: Exception) -> bool:
     text = str(err).lower()
     return any(token in text for token in ("521", "502", "503", "504", "429", "timeout", "temporar"))
+
+
+def _stale_school(school: SchoolData) -> bool:
+    """True when probes show a login collision or a dead Wilma session."""
+    blob = " ".join(school.probes)
+    if "LOGIN_COLLISION" in blob:
+        return True
+    low = blob.lower()
+    markers = (
+        "error-access-denied",
+        "päällekkäinen",
+        "session expired",
+        "sessio vanhent",
+        "not authenticated",
+        "unauthorized",
+        "kirjaudu",
+    )
+    if any(token in low for token in markers):
+        return True
+    return bool(re.search(r"\b(401|403)\b", blob))

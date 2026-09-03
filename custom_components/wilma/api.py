@@ -265,20 +265,23 @@ def _walk_exams(obj: Any, exams: list[Exam], grades: list[Exam], depth: int = 0)
             _walk_exams(item, exams, grades, depth + 1)
 
 
+HW_TEXT_KEYS = (
+    "Homework",
+    "homework",
+    "Assignment",
+    "assignment",
+    "Task",
+    "task",
+    "HomeworkText",
+    "Content",
+)
+
+
 def _hw_from_dict(item: dict, subject: str = "") -> Homework | None:
-    text = _pick(
-        item,
-        (
-            "Homework",
-            "homework",
-            "Assignment",
-            "assignment",
-            "Task",
-            "task",
-            "HomeworkText",
-            "Content",
-        ),
-    )
+    # A list of homework items must be walked, not collapsed to the first entry.
+    if any(isinstance(item.get(key), list) for key in HW_TEXT_KEYS):
+        return None
+    text = _pick(item, HW_TEXT_KEYS)
     if not text:
         return None
     if DATE_RE.fullmatch(text.strip()) or text in ("[]", "()"):
@@ -292,6 +295,16 @@ def _hw_from_dict(item: dict, subject: str = "") -> Homework | None:
     )
 
 
+def _homework_from_text(text: str, subject: str = "") -> Homework | None:
+    cleaned = text.strip()
+    if not cleaned or DATE_RE.fullmatch(cleaned) or cleaned in ("[]", "()"):
+        return None
+    return Homework(subject=subject, text=cleaned)
+
+
+_HW_TEXT_KEY_SET = {key.lower() for key in HW_TEXT_KEYS}
+
+
 def _walk_homework(obj: Any, acc: list[Homework], depth: int = 0, subject: str = "") -> None:
     if depth > 6:
         return
@@ -302,12 +315,34 @@ def _walk_homework(obj: Any, acc: list[Homework], depth: int = 0, subject: str =
             acc.append(hw)
         for key, val in obj.items():
             low = str(key).lower()
-            if low in {"schedule", "reservations", "rooms", "teachers"}:
+            if low in {"reservations", "rooms", "teachers"}:
+                continue
+            # Expand a Homework-like list in place; do not treat other strings as tasks.
+            if low in _HW_TEXT_KEY_SET and isinstance(val, list):
+                for item in val:
+                    if isinstance(item, str):
+                        parsed = _homework_from_text(item, current)
+                        if parsed:
+                            acc.append(parsed)
+                    else:
+                        _walk_homework(item, acc, depth + 1, current)
                 continue
             _walk_homework(val, acc, depth + 1, current)
     elif isinstance(obj, list):
         for item in obj:
             _walk_homework(item, acc, depth + 1, subject)
+
+
+def _dedupe_homework(items: list[Homework]) -> list[Homework]:
+    seen: set[tuple[str, str, str]] = set()
+    out: list[Homework] = []
+    for item in items:
+        key = (item.date, item.subject, item.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
 
 
 
@@ -483,8 +518,15 @@ def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
                 or payload
             )
             _walk_exams(exam_src, data.exams, data.grades)
-            hw_src = payload.get("Homework") or payload.get("homework") or payload.get("Groups") or payload
-            _walk_homework(hw_src, data.homework)
+            walked_hw = False
+            for key in ("Homework", "homework", "Groups", "groups", "Schedule", "schedule"):
+                src = payload.get(key)
+                if src:
+                    _walk_homework(src, data.homework)
+                    walked_hw = True
+            if not walked_hw:
+                _walk_homework(payload, data.homework)
+            data.homework = _dedupe_homework(data.homework)
             # Extract courses from Groups
             for grp in payload.get("Groups") or payload.get("groups") or []:
                 if not isinstance(grp, dict):
@@ -557,6 +599,7 @@ async def load_school(session: aiohttp.ClientSession, base_url: str, user_id: st
         if len(data.notes) > before or isinstance(payload, dict):
             data.sources.append(path)
     data.notes = _dedupe_notes(data.notes)
+    data.homework = _dedupe_homework(data.homework)
     data.sources = list(dict.fromkeys(data.sources))
     return data
 

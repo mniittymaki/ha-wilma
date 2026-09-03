@@ -10,6 +10,7 @@ import aiohttp
 
 ROLE_RE = re.compile(r"/(!?\d{5,12})")
 NAME_RE = re.compile(r">\s*([^<]{2,80})\s*<")
+_ID_NAME_RE = re.compile(r"^!?\d{3,}$")
 
 
 @dataclass
@@ -27,6 +28,26 @@ def _norm_id(raw: str) -> str:
     if raw.isdigit():
         return f"!{raw}"
     return raw
+
+
+def _is_named_child(name: str, child_id: str = "") -> bool:
+    """True if name looks like a person, not a raw Wilma id / digit string."""
+    raw = (name or "").strip()
+    if not raw:
+        return False
+    if _ID_NAME_RE.fullmatch(raw):
+        return False
+    if child_id:
+        if _norm_id(raw) == _norm_id(child_id):
+            return False
+        if raw.lstrip("!") == str(child_id).strip().lstrip("!"):
+            return False
+    return True
+
+
+def _prefer_named(children: list[WilmaChild]) -> list[WilmaChild]:
+    named = [child for child in children if _is_named_child(child.name, child.child_id)]
+    return named or children
 
 
 def _name_from(item: dict) -> str:
@@ -73,7 +94,7 @@ def parse_roles(payload: Any) -> list[WilmaChild]:
             for match in ROLE_RE.finditer(payload):
                 cid = _norm_id(match.group(1))
                 found.setdefault(cid, cid)
-    return [WilmaChild(child_id=cid, name=name) for cid, name in found.items()]
+    return _prefer_named([WilmaChild(child_id=cid, name=name) for cid, name in found.items()])
 
 
 async def fetch_children(
@@ -105,7 +126,10 @@ async def fetch_children(
                     break
         except Exception:  # noqa: BLE001
             continue
-    if uid and not any(child.child_id == uid for child in children):
+    children = _prefer_named(children)
+    named = [child for child in children if _is_named_child(child.name, child.child_id)]
+    # Do not invent a guardian-id child when real named children already exist.
+    if uid and not named and not any(child.child_id == uid for child in children):
         children.insert(0, WilmaChild(child_id=uid, name=uid))
     return children
 

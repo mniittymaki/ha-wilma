@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api import lessons_for_day, next_lesson, parse_date
 from .const import CONF_CHILD_ID, CONF_CHILD_NAME, DOMAIN, TIMEZONE
 from .coordinator import WilmaCoordinator, WilmaData, children_from_entry, ChildMessages
+from .homework import split_homework
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
@@ -37,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 TodaySensor(coordinator, entry, cid, cname),
                 NextLessonSensor(coordinator, entry, cid, cname),
                 HomeworkSensor(coordinator, entry, cid, cname),
+                HomeworkPastSensor(coordinator, entry, cid, cname),
                 ExamSensor(coordinator, entry, cid, cname),
                 GradeSensor(coordinator, entry, cid, cname),
                 NewsSensor(coordinator, entry, cid, cname),
@@ -185,7 +187,7 @@ class LatestMessageSensor(Base):
             )
         for i, msg in enumerate(self.data.messages[:10], start=1):
             flag = "● " if msg.unread else ""
-            attrs[f"msg_{i}"] = f"{flag}{msg.subject} · {msg.sender}"
+            attrs[f"msg_{i}"] = f"{flag}{_join(msg.timestamp, msg.subject, msg.sender)}"
         return attrs
 
 
@@ -357,15 +359,14 @@ class HomeworkSensor(Base):
     def __init__(self, coordinator, entry, child_id=None, child_name=None):
         super().__init__(coordinator, entry, "homework", child_id, child_name)
 
+    def _split(self):
+        if not self.school:
+            return [], []
+        return split_homework(self.school.homework, self.school.schedule)
+
     def _current_homework(self):
-        today = datetime.now(ZoneInfo(TIMEZONE)).date()
-        homework = []
-        for item in self.school.homework if self.school else []:
-            parsed = parse_date(item.date)
-            if parsed is None or parsed >= today:
-                homework.append(item)
-        homework.sort(key=lambda item: parse_date(item.date) or datetime.max.date())
-        return homework
+        upcoming, _past = self._split()
+        return upcoming
 
     @property
     def native_value(self) -> int:
@@ -378,6 +379,35 @@ class HomeworkSensor(Base):
         return {
             f"hw_{i}": _join(item.date, item.subject, item.text)
             for i, item in enumerate(self._current_homework()[:12], start=1)
+        }
+
+
+class HomeworkPastSensor(Base):
+    _attr_name = "Menneet läksyt"
+    _attr_icon = "mdi:book-check-outline"
+    _attr_native_unit_of_measurement = "kpl"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "homework_past", child_id, child_name)
+
+    def _past_homework(self):
+        if not self.school:
+            return []
+        _upcoming, past = split_homework(self.school.homework, self.school.schedule)
+        return past
+
+    @property
+    def native_value(self) -> int:
+        return len(self._past_homework())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.school:
+            return {}
+        return {
+            f"hw_{i}": _join(item.date, item.subject, item.text)
+            for i, item in enumerate(self._past_homework()[:12], start=1)
         }
 
 
@@ -517,5 +547,5 @@ class ChildUnreadSensor(Base):
             attrs["latest_time"] = cm.latest.timestamp
         for i, msg in enumerate(cm.messages[:10], start=1):
             flag = "● " if msg.unread else ""
-            attrs[f"msg_{i}"] = f"{flag}{msg.subject} · {msg.sender}"
+            attrs[f"msg_{i}"] = f"{flag}{_join(msg.timestamp, msg.subject, msg.sender)}"
         return attrs

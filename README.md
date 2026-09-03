@@ -42,7 +42,7 @@ fetched by this component on top of that session.
 | Lukemattomat, Viestit, Viimeisin viesti | Wilhelmina `get_messages()` |
 | Oppilas | `/{id}/overview` + `/{id}/roles` |
 | Tänään, Seuraava tunti, Kalenteri | overview schedule |
-| Läksyt | overview homework / groups |
+| Läksyt, Menneet läksyt | overview homework / groups / schedule |
 | Seuraava koe, Arvosanat | overview exams / grades |
 | Tiedote | news (HTML/JSON if available) |
 | Kurssit | overview groups |
