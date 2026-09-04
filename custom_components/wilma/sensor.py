@@ -32,6 +32,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             [
                 StatusSensor(coordinator, entry, cid, cname),
                 AbsenceSensor(coordinator, entry, cid, cname),
+                UnresolvedSensor(coordinator, entry, cid, cname),
+                AllNotesSensor(coordinator, entry, cid, cname),
                 LateSensor(coordinator, entry, cid, cname),
                 PositiveSensor(coordinator, entry, cid, cname),
                 LatestNoteSensor(coordinator, entry, cid, cname),
@@ -222,6 +224,52 @@ class AbsenceSensor(Base):
         return {
             f"item_{i}": _join(n.date, n.kind or n.code, n.subject, n.teacher, n.text)
             for i, n in enumerate(self.school.absences[:15], start=1)
+        }
+
+
+class UnresolvedSensor(Base):
+    _attr_name = "Selvittämättömät tuntimerkinnät"
+    _attr_icon = "mdi:clipboard-alert-outline"
+    _attr_native_unit_of_measurement = "kpl"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "unresolved_notes", child_id, child_name)
+
+    @property
+    def native_value(self) -> int:
+        return 0 if not self.school else len(self.school.unresolved)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.school:
+            return {}
+        return {
+            f"item_{i}": _join(n.date, n.kind or n.code, n.subject, n.teacher, n.text)
+            for i, n in enumerate(self.school.unresolved[:20], start=1)
+        }
+
+
+class AllNotesSensor(Base):
+    _attr_name = "Kaikki tuntimerkinnät"
+    _attr_icon = "mdi:clipboard-text-outline"
+    _attr_native_unit_of_measurement = "kpl"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "all_notes", child_id, child_name)
+
+    @property
+    def native_value(self) -> int:
+        return 0 if not self.school else len(self.school.notes)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.school:
+            return {}
+        return {
+            f"item_{i}": _join(n.date, n.time, n.kind or n.code, n.subject, n.teacher, n.text)
+            for i, n in enumerate(self.school.notes[:50], start=1)
         }
 
 
