@@ -429,7 +429,7 @@ def _parse_attendance_html(html: str) -> list[LessonNote]:
         blob = f"{title} {extra}".lower()
         if not any(
             token in blob
-            for token in ("poissa", "myöh", "lupa", "selvitys", "sairas", "kehu", "kiitos", "huom", "terveys", "luvall")
+            for token in ("poissa", "myöh", "lupa", "selvitys", "selvittäm", "sairas", "kehu", "kiitos", "huom", "terveys", "luvall")
         ):
             continue
         date_s = ""
@@ -439,7 +439,7 @@ def _parse_attendance_html(html: str) -> list[LessonNote]:
             date_s = parsed.isoformat() if parsed else match.group(1)
         notes.append(LessonNote(date=date_s, kind=title.strip(), text=(extra or "").strip()))
     for date_s, kind, extra in re.findall(
-        r"(" + DATE_RE.pattern + r").{0,160}?(Poissa|Myöhässä|Lupa|Selvitys|Sairaana|Huomautus|Kehu|Kiitos|Myöh)([^<]{0,100})",
+        r"(" + DATE_RE.pattern + r").{0,160}?(Poissa|Myöhässä|Lupa|Selvitys|Selvittämätön|Selvittämättä|Selvitettävä|Sairaana|Huomautus|Kehu|Kiitos|Myöh)([^<]{0,100})",
         html,
         flags=re.IGNORECASE,
     ):

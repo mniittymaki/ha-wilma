@@ -97,6 +97,10 @@ class SchoolData:
         return [n for n in self.notes if _match(n, ABSENCE)]
 
     @property
+    def unresolved(self) -> list[LessonNote]:
+        return [n for n in self.notes if _match(n, UNRESOLVED)]
+
+    @property
     def lates(self) -> list[LessonNote]:
         return [n for n in self.notes if _match(n, LATE)]
 
@@ -126,6 +130,7 @@ ABSENCE = (
 )
 LATE = ("myöh", "late", "tardy", "myö")
 POSITIVE = ("kehu", "kiitos", "aktiiv", "+akt", "+teh", "+koe", "hyvä")
+UNRESOLVED = ("selvittämätön", "selvitettävä", "selvittämättä", "unresolved", "unexcused")
 
 
 def _match(note: LessonNote, tokens: tuple[str, ...]) -> bool:
