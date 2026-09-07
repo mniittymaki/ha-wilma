@@ -262,7 +262,7 @@ async def fetch_messages_json(
                 messages.append({
                     "id": mid,
                     "subject": str(item.get("Subject") or item.get("subject") or ""),
-                    "sender": str(item.get("Sender") or item.get("sender") or ""),
+                    "sender": str(item.get("Sender") or item.get("sender") or "Wilma"),
                     "timestamp": str(item.get("TimeStamp") or item.get("timestamp") or ""),
                     "unread": bool(unread_state) if unread_state is not None else False,
                 })

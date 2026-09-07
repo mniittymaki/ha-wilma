@@ -183,7 +183,14 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
             self._logged_in = False
             await self.async_login()
             self._apply_role()
-            return await self.client.get_messages()
+            try:
+                return await self.client.get_messages()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Wilma get_messages failed: %s", err)
+                return []
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Wilma get_messages failed: %s", err)
+            return []
 
     async def _fetch_child_messages(self, child_id: str) -> list[WilmaMessage]:
         """Fetch messages for a specific child. JSON first, HTML fallback."""
