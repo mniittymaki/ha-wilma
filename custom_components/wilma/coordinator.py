@@ -365,6 +365,8 @@ def _stale_school(school: SchoolData) -> bool:
         if "LOGIN_COLLISION" in probe:
             return True
         low = probe.lower()
+        if "login_required" in low:
+            return True
         if "päällekkäinen" in low or "session expired" in low:
             return True
         parts = probe.split()
