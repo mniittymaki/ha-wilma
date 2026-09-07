@@ -480,11 +480,14 @@ def _apply_identity(payload: dict, data: SchoolData) -> None:
 
 
 def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
-    if isinstance(payload, str) and (
-        "Päällekkäinen kirjautuminen" in payload or "error-access-denied" in payload
-    ):
-        data.probes.append(f"{source} LOGIN_COLLISION")
-        return
+    if isinstance(payload, str):
+        low = payload.lower()
+        if "päällekkäinen kirjautuminen" in low or "error-access-denied" in low:
+            data.probes.append(f"{source} LOGIN_COLLISION")
+            return
+        if _looks_like_login_page(low):
+            data.probes.append(f"{source} LOGIN_REQUIRED")
+            return
     if isinstance(payload, dict):
         _apply_identity(payload, data)
         if not data.overview_keys:
@@ -579,6 +582,18 @@ def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
             ]
             if interesting and not data.sample_note:
                 data.sample_note = " || ".join(interesting[:8])
+
+
+def _looks_like_login_page(html: str) -> bool:
+    """Recognise a login page returned with HTTP 200 after session loss."""
+    login_markers = (
+        'type="password"',
+        'name="password"',
+        'id="password"',
+        "kirjaudu sisään",
+        "kirjaudu sisään wilmaan",
+    )
+    return sum(marker in html for marker in login_markers) >= 2
 
 
 async def load_school(session: aiohttp.ClientSession, base_url: str, user_id: str) -> SchoolData:
