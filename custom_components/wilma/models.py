@@ -41,6 +41,7 @@ class Homework:
     text: str = ""
     date: str = ""
     teacher: str = ""
+    hint: str = ""
 
 
 @dataclass

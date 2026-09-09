@@ -60,10 +60,15 @@ _HW_ATTR_LIMIT = 30
 
 
 def _homework_attrs(items) -> dict:
-    return {
-        f"hw_{i}": _join(item.date, item.subject, item.text)
-        for i, item in enumerate(items[:_HW_ATTR_LIMIT], start=1)
-    }
+    attrs = {}
+    unmatched = 0
+    for i, item in enumerate(items[:_HW_ATTR_LIMIT], start=1):
+        attrs[f"hw_{i}"] = _join(item.date, item.subject, item.text, getattr(item, "hint", ""))
+        if getattr(item, "hint", "").startswith("ei lukujärjestysosumaa"):
+            unmatched += 1
+    if unmatched:
+        attrs["huomio"] = f"{unmatched} läksyllä ei lukujärjestysosumaa"
+    return attrs
 
 
 class Base(CoordinatorEntity[WilmaCoordinator], SensorEntity):
@@ -421,7 +426,7 @@ class HomeworkSensor(Base):
     def _current_homework(self):
         if not self.school:
             return []
-        upcoming, _past = split_homework(self.school.homework, self.school.schedule)
+        upcoming, _past = split_homework(self.school.homework, self.school.schedule, courses=self.school.courses)
         return upcoming
 
     @property
@@ -447,7 +452,7 @@ class HomeworkPastSensor(Base):
     def _past_homework(self):
         if not self.school:
             return []
-        _upcoming, past = split_homework(self.school.homework, self.school.schedule)
+        _upcoming, past = split_homework(self.school.homework, self.school.schedule, courses=self.school.courses)
         return past
 
     @property
@@ -473,7 +478,8 @@ class HomeworkAllSensor(Base):
     def _all_homework(self):
         if not self.school:
             return []
-        return list(self.school.homework)
+        upcoming, past = split_homework(self.school.homework, self.school.schedule, courses=self.school.courses)
+        return list(upcoming) + list(past)
 
     @property
     def native_value(self) -> int:

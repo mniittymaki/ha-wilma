@@ -1,7 +1,7 @@
 """Wilma calendar: lessons, exams and homework dates."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
@@ -52,8 +52,12 @@ class WilmaCalendar(CoordinatorEntity[WilmaCoordinator], CalendarEntity):
     @property
     def event(self) -> CalendarEvent | None:
         now = datetime.now(_TZ)
-        upcoming = [item for item in self._events(now.date(), now.date() + timedelta(days=7)) if item.end >= now]
-        upcoming.sort(key=lambda item: item.start)
+        upcoming = [
+            item
+            for item in self._events(now.date(), now.date() + timedelta(days=7))
+            if _event_end(item) >= now
+        ]
+        upcoming.sort(key=lambda item: _event_start(item))
         return upcoming[0] if upcoming else None
 
     async def async_get_events(self, hass: HomeAssistant, start_date: datetime, end_date: datetime) -> list[CalendarEvent]:
@@ -113,11 +117,29 @@ class WilmaCalendar(CoordinatorEntity[WilmaCoordinator], CalendarEntity):
         return events
 
 
+def _as_datetime(value: date | datetime, *, end: bool = False) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=_TZ)
+    moment = time.max if end else time.min
+    return datetime.combine(value, moment, tzinfo=_TZ)
+
+
+def _event_start(item: CalendarEvent) -> datetime:
+    return _as_datetime(item.start)
+
+
+def _event_end(item: CalendarEvent) -> datetime:
+    return _as_datetime(item.end, end=True)
+
+
 def _timed(day: date, start_s: str, end_s: str, summary: str, description: str) -> CalendarEvent:
-    start_hm = parse_time(start_s) or (8, 0)
-    end_hm = parse_time(end_s) or (start_hm[0] + 1, start_hm[1])
-    start = datetime(day.year, day.month, day.day, start_hm[0], start_hm[1], tzinfo=_TZ)
-    end = datetime(day.year, day.month, day.day, end_hm[0], end_hm[1], tzinfo=_TZ)
+    start_t = parse_time(start_s) or time(8, 0)
+    end_t = parse_time(end_s)
+    start = datetime.combine(day, start_t, tzinfo=_TZ)
+    if end_t is None:
+        end = start + timedelta(hours=1)
+    else:
+        end = datetime.combine(day, end_t, tzinfo=_TZ)
     if end <= start:
         end = start + timedelta(minutes=45)
     return CalendarEvent(start=start, end=end, summary=summary, description=description)
