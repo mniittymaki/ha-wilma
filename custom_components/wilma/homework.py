@@ -175,8 +175,8 @@ def _weekly_lessons(schedule: list[Lesson], subject: str, aliases: dict[str, set
 
 
 def _next_weekly_end(lessons: list[Lesson], start_day, tz) -> tuple[datetime, Lesson] | None:
-    """End of the first weekly slot on or after start_day."""
-    for offset in range(0, 14):
+    """End of the first weekly slot strictly after start_day."""
+    for offset in range(1, 15):
         day = start_day + timedelta(days=offset)
         weekday = day.isoweekday()
         found: list[tuple[datetime, Lesson]] = []
@@ -196,7 +196,7 @@ def _hint_next(due: datetime, lesson: Lesson) -> str:
     code = slot_code(lesson.subject) or lesson.subject
     weekday = _WEEKDAY.get(due.isoweekday(), "")
     clock = due.strftime("%H:%M")
-    return f"lukujärjestys {code} {weekday} {clock}".strip()
+    return f"lukujärjestys {code} {weekday} {due.day}.{due.month}. {clock}".strip()
 
 
 def split_homework(
@@ -207,8 +207,8 @@ def split_homework(
 ) -> tuple[list[Homework], list[Homework]]:
     """Return (upcoming, past).
 
-    A homework item moves to past once that subject's next weekly lesson
-    has ended. Sets item.hint with the match reason for sensors.
+    A homework item moves to past once the next weekly lesson AFTER the
+    homework date has ended (same-day lesson is the assignment, not the due).
     """
     now = now or datetime.now(_TZ)
     if now.tzinfo is None:
