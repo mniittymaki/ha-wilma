@@ -15,7 +15,8 @@ from .models import Child, Course, Exam, Homework, Lesson, LessonNote, NewsItem,
 
 _LOGGER = logging.getLogger(__name__)
 
-DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})")
+DATE_PATTERN = r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}"
+DATE_RE = re.compile(r"(" + DATE_PATTERN + r")")
 
 DATE_KEYS = ("Date", "date", "Day", "day", "DateTime", "Pvm")
 TIME_KEYS = ("Time", "time", "Start", "start", "StartTime", "Hour")
@@ -429,7 +430,7 @@ def _parse_attendance_html(html: str) -> list[LessonNote]:
         blob = f"{title} {extra}".lower()
         if not any(
             token in blob
-            for token in ("poissa", "myöh", "lupa", "selvitys", "selvittäm", "sairas", "kehu", "kiitos", "huom", "terveys", "luvall")
+            for token in ("poissa", "myöh", "lupa", "selvitys", "selvittäm", "sairas", "kehu", "kiitos", "huom", "tuntimerk", "merkintä", "terveys", "luvall")
         ):
             continue
         date_s = ""
@@ -439,7 +440,7 @@ def _parse_attendance_html(html: str) -> list[LessonNote]:
             date_s = parsed.isoformat() if parsed else match.group(1)
         notes.append(LessonNote(date=date_s, kind=title.strip(), text=(extra or "").strip()))
     for date_s, kind, extra in re.findall(
-        r"(" + DATE_RE.pattern + r").{0,160}?(Poissa|Myöhässä|Lupa|Selvitys|Selvittämätön|Selvittämättä|Selvitettävä|Sairaana|Huomautus|Kehu|Kiitos|Myöh)([^<]{0,100})",
+        r"(" + DATE_PATTERN + r").{0,160}?(Poissa|Myöhässä|Lupa|Selvitys|Selvittämätön|Selvittämättä|Selvitettävä|Sairaana|Huomautus|Tuntimerkintä|Merkintä|Kehu|Kiitos|Myöh)([^<]{0,100})",
         html,
         flags=re.IGNORECASE,
     ):
