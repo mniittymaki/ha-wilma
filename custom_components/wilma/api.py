@@ -15,8 +15,40 @@ from .models import Child, Course, Exam, Homework, Lesson, LessonNote, NewsItem,
 
 _LOGGER = logging.getLogger(__name__)
 
-DATE_PATTERN = r"\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}"
-DATE_RE = re.compile(r"(" + DATE_PATTERN + r")")
+DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})")
+SHORT_DATE_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(?!\d)")
+NOTE_HTML_TOKENS = (
+    "poissa",
+    "myöh",
+    "lupa",
+    "selvitys",
+    "selvittäm",
+    "sairas",
+    "kehu",
+    "kiitos",
+    "hyvä",
+    "hyve",
+    "pitkäjänteisesti",
+    "sinnikkäästi",
+    "oppimisestasi",
+    "toiset huomioon",
+    "vastuullisena",
+    "digitaalisessa",
+    "ympäristöstä",
+    "oikeellisuutta",
+    "häiritsit",
+    "opiskeluvälineitä",
+    "tehtäviä tekemättä",
+    "käytöksessäsi",
+    "et osallistunut",
+    "moite",
+    "huom",
+    "terveys",
+    "luvall",
+    "aktiiv",
+    "tuntimerk",
+    "merkintä",
+)
 
 DATE_KEYS = ("Date", "date", "Day", "day", "DateTime", "Pvm")
 TIME_KEYS = ("Time", "time", "Start", "start", "StartTime", "Hour")
@@ -420,36 +452,75 @@ def _first_list_item(payload: dict, keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _parse_short_date(text: str) -> str:
+    parsed = parse_date(text)
+    if parsed:
+        return parsed.isoformat()
+    match = SHORT_DATE_RE.search(text or "")
+    if not match:
+        return ""
+    day, month = int(match.group(1)), int(match.group(2))
+    try:
+        year = date.today().year
+        parsed = date(year, month, day)
+        if parsed > date.today() + timedelta(days=30):
+            parsed = date(year - 1, month, day)
+        return parsed.isoformat()
+    except ValueError:
+        return ""
+
+
 def _parse_attendance_html(html: str) -> list[LessonNote]:
     notes: list[LessonNote] = []
     for title, extra in re.findall(
-        r'(?:title|aria-label|data-original-title)="([^"]{2,120})"[^>]{0,200}?(?:data-(?:code|type|caption)="([^"]*)")?',
+        r'(?:title|aria-label|data-original-title)="([^"]{2,160})"[^>]{0,200}?(?:data-(?:code|type|caption)="([^"]*)")?',
         html,
         flags=re.IGNORECASE,
     ):
         blob = f"{title} {extra}".lower()
-        if not any(
-            token in blob
-            for token in ("poissa", "myöh", "lupa", "selvitys", "selvittäm", "sairas", "kehu", "kiitos", "huom", "tuntimerk", "merkintä", "terveys", "luvall")
-        ):
+        if not any(token in blob for token in NOTE_HTML_TOKENS):
             continue
-        date_s = ""
-        match = DATE_RE.search(title)
-        if match:
-            parsed = parse_date(match.group(1))
-            date_s = parsed.isoformat() if parsed else match.group(1)
-        notes.append(LessonNote(date=date_s, kind=title.strip(), text=(extra or "").strip()))
+        notes.append(
+            LessonNote(
+                date=_parse_short_date(title) or _parse_short_date(extra),
+                kind=title.strip(),
+                text=(extra or "").strip(),
+            )
+        )
     for date_s, kind, extra in re.findall(
-        r"(" + DATE_PATTERN + r").{0,160}?(Poissa|Myöhässä|Lupa|Selvitys|Selvittämätön|Selvittämättä|Selvitettävä|Sairaana|Huomautus|Tuntimerkintä|Merkintä|Kehu|Kiitos|Myöh)([^<]{0,100})",
+        r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}|\d{1,2}\.\d{1,2}\.)\s*.{0,160}?"
+        r"(Poissa|Myöhässä|Lupa|Selvitys|Selvittämätön|Selvittämättä|Selvitettävä|"
+        r"Sairaana|Huomautus|Kehu|Kiitos|Hyvä|Myöh)([^<]{0,120})",
         html,
         flags=re.IGNORECASE,
     ):
-        parsed = parse_date(date_s)
         notes.append(
             LessonNote(
-                date=parsed.isoformat() if parsed else date_s,
+                date=_parse_short_date(date_s),
                 kind=kind,
-                text=extra.strip(" :-·|"),
+                text=extra.strip(" :-·|,"),
+            )
+        )
+    # Visible Wilma line: "9.9. tunti 9:15: Hyvä!,  (Aino Halonen)"
+    for date_s, clock, rest in re.findall(
+        r"(\d{1,2}\.\d{1,2}\.(?:\d{4})?)\s*tunti\s*(\d{1,2}[:.]\d{2})\s*:\s*([^<\n]{2,220})",
+        html,
+        flags=re.IGNORECASE,
+    ):
+        teacher = ""
+        tmatch = re.search(r"\(([^)]+)\)", rest)
+        if tmatch:
+            teacher = tmatch.group(1).strip()
+        kind = re.sub(r"\([^)]*\)", "", rest).strip(" ,;·")
+        if not any(token in kind.lower() for token in NOTE_HTML_TOKENS):
+            continue
+        notes.append(
+            LessonNote(
+                date=_parse_short_date(date_s),
+                time=clock.replace(".", ":"),
+                kind=kind,
+                teacher=teacher,
+                text=rest.strip(),
             )
         )
     return notes
@@ -553,6 +624,15 @@ def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
                 klass = str(grp.get("Class") or "").strip()
                 if klass and not data.class_name:
                     data.class_name = klass
+            note_src = (
+                payload.get("Observations")
+                or payload.get("observations")
+                or payload.get("Notes")
+                or payload.get("notes")
+                or payload.get("LessonNotes")
+            )
+            if note_src:
+                _walk_notes(note_src, data.notes)
             for item in payload.get("News") or payload.get("news") or []:
                 if isinstance(item, dict):
                     data.news.append(
@@ -562,6 +642,8 @@ def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
                             date=_first_date(item),
                         )
                     )
+        else:
+            _walk_notes(payload, data.notes)
         return
     if isinstance(payload, str):
         if not data.child_name:
@@ -579,7 +661,7 @@ def _parse_payload(payload: Any, data: SchoolData, source: str = "") -> None:
             data.notes.extend(parsed_notes)
             titles = re.findall(r'title="([^"]{2,80})"', payload, flags=re.IGNORECASE)
             interesting = [
-                t for t in titles if any(x in t.lower() for x in ("poissa", "myöh", "lupa", "sel", "kehu"))
+                t for t in titles if any(x in t.lower() for x in ("poissa", "myöh", "lupa", "sel", "kehu", "hyvä", "hyve", "pitkäjänteisesti", "huomioon"))
             ]
             if interesting and not data.sample_note:
                 data.sample_note = " || ".join(interesting[:8])

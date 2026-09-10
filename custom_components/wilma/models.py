@@ -110,6 +110,10 @@ class SchoolData:
         return [n for n in self.notes if _match(n, POSITIVE)]
 
     @property
+    def remarks(self) -> list[LessonNote]:
+        return [n for n in self.notes if _match(n, REMARK) and not _match(n, POSITIVE)]
+
+    @property
     def unread_grades(self) -> list[Exam]:
         return [grade for grade in self.grades if not grade.seen]
 
@@ -130,8 +134,35 @@ ABSENCE = (
     "lup",
 )
 LATE = ("myöh", "late", "tardy", "myö")
-POSITIVE = ("kehu", "kiitos", "aktiiv", "+akt", "+teh", "+koe", "hyvä")
+POSITIVE = (
+    "kehu",
+    "kiitos",
+    "aktiiv",
+    "+akt",
+    "+teh",
+    "+koe",
+    "hyvä",
+    "hyve",
+    "pitkäjänteisesti",
+    "sinnikkäästi",
+    "vastuuta omasta oppimisesta",
+    "toit toiset huomioon",
+    "otit toiset huomioon",
+    "ryhmän vastuullisena",
+    "digitaalisessa ympäristössä",
+    "vastuuta ympäristöstä",
+    "tiedon oikeellisuutta",
+)
 UNRESOLVED = ("selvittämätön", "selvitettävä", "selvittämättä", "unresolved", "unexcused")
+REMARK = (
+    "häiritsit työskentelyä",
+    "opiskeluvälineitä",
+    "tehtäviä tekemättä",
+    "käytöksessäsi",
+    "et osallistunut",
+    "moite",
+    "moitte",
+)
 
 
 def _match(note: LessonNote, tokens: tuple[str, ...]) -> bool:

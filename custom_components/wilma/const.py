@@ -1,5 +1,5 @@
 DOMAIN = "wilma"
-VERSION = "1.2.7"
+VERSION = "1.2.10"
 DEFAULT_URL = "https://helsinki.inschool.fi"
 DEFAULT_SCAN_INTERVAL = 300
 
@@ -56,4 +56,21 @@ ABSENCE_TOKENS = (
     "terveydellinen",
 )
 LATE_TOKENS = ("myöh", "late", "tardy")
-POSITIVE_TOKENS = ("kehu", "kiitos", "aktiiv", "+akt", "+teh", "+koe", "hyvä")
+POSITIVE_TOKENS = (
+    "kehu",
+    "kiitos",
+    "aktiiv",
+    "+akt",
+    "+teh",
+    "+koe",
+    "hyvä",
+    "hyve",
+    "pitkäjänteisesti",
+    "sinnikkäästi",
+    "vastuuta omasta oppimisesta",
+    "otit toiset huomioon",
+    "ryhmän vastuullisena",
+    "digitaalisessa ympäristössä",
+    "vastuuta ympäristöstä",
+    "tiedon oikeellisuutta",
+)

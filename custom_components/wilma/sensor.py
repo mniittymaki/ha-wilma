@@ -36,6 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 AllNotesSensor(coordinator, entry, cid, cname),
                 LateSensor(coordinator, entry, cid, cname),
                 PositiveSensor(coordinator, entry, cid, cname),
+                RemarkSensor(coordinator, entry, cid, cname),
                 LatestNoteSensor(coordinator, entry, cid, cname),
                 TodaySensor(coordinator, entry, cid, cname),
                 NextLessonSensor(coordinator, entry, cid, cname),
@@ -321,6 +322,29 @@ class PositiveSensor(Base):
         return {
             f"item_{i}": _join(n.date, n.kind, n.subject, n.text)
             for i, n in enumerate(self.school.positives[:10], start=1)
+        }
+
+
+class RemarkSensor(Base):
+    _attr_name = "Moitteet"
+    _attr_icon = "mdi:thumb-down-outline"
+    _attr_native_unit_of_measurement = "kpl"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry, child_id=None, child_name=None):
+        super().__init__(coordinator, entry, "remarks", child_id, child_name)
+
+    @property
+    def native_value(self) -> int:
+        return 0 if not self.school else len(self.school.remarks)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        if not self.school:
+            return {}
+        return {
+            f"item_{i}": _join(n.date, n.time, n.kind, n.subject, n.teacher, n.text)
+            for i, n in enumerate(self.school.remarks[:15], start=1)
         }
 
 
