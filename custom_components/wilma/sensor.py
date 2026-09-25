@@ -422,8 +422,9 @@ class NextLessonSensor(Base):
         if not self.school:
             return {}
         attrs = {"lesson_count": len(self.school.schedule)}
+        # Weekly slots only; the dated fill-ins from the schedule page carry a single date.
         ordered = sorted(
-            self.school.schedule,
+            (item for item in self.school.schedule if len(item.dates) != 1),
             key=lambda item: (item.day or 99, item.start or "", item.subject or ""),
         )
         for i, lesson in enumerate(ordered[:40], start=1):

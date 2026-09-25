@@ -393,10 +393,10 @@ def _dedupe_notes(notes: list[LessonNote]) -> list[LessonNote]:
 
 
 def _dedupe_lessons(lessons: list[Lesson]) -> list[Lesson]:
-    seen: set[tuple[int, str, str, str]] = set()
+    seen: set[tuple[int, str, str, str, str, tuple[str, ...]]] = set()
     out: list[Lesson] = []
     for lesson in lessons:
-        key = (lesson.day, lesson.start, lesson.end, lesson.subject)
+        key = (lesson.day, lesson.start, lesson.end, lesson.subject, lesson.date, tuple(lesson.dates))
         if key in seen:
             continue
         seen.add(key)
@@ -679,6 +679,165 @@ def _looks_like_login_page(html: str) -> bool:
     return sum(marker in html for marker in login_markers) >= 2
 
 
+SCHEDULE_EVENTS_RE = re.compile(r"eventsJSON\s*=\s*\{.*?Events\s*:\s*(\[)", re.S)
+SCHEDULE_WEEKS_AHEAD = 4
+
+
+def _json_array_at(text: str, start: int) -> str | None:
+    """Return the bracket-balanced JSON array literal starting at text[start] == '['."""
+    depth = 0
+    in_str = False
+    esc = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
+def _first_text(event: dict, key: str) -> str:
+    """Wilma schedule events wrap text fields as {"0": "..."}."""
+    value = event.get(key)
+    if isinstance(value, dict):
+        value = value.get("0")
+    return _as_text(value).strip()
+
+
+def _event_teachers(event: dict) -> str:
+    """"Heiniö Päivi (PHei), Tuominen Sanna (STU)" from Opet codes + OpeInfo names."""
+    codes = [c.strip() for c in re.sub(r"^O:\s*", "", _first_text(event, "Opet")).split(",") if c.strip()]
+    info = event.get("OpeInfo")
+    if isinstance(info, dict):
+        info = info.get("0")
+    names: dict[str, str] = {}
+    if isinstance(info, dict):
+        for item in info.values():
+            if isinstance(item, dict) and item.get("lyhenne"):
+                names[str(item["lyhenne"])] = str(item.get("nimi") or "").strip()
+    parts = [f"{names[c]} ({c})" if names.get(c) else c for c in codes]
+    return ", ".join(parts)
+
+
+def _minutes(value: Any) -> str:
+    try:
+        total = int(value)
+    except (TypeError, ValueError):
+        return ""
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def parse_schedule_events(html: str) -> list[Lesson]:
+    """Lessons from Wilma's /schedule page (`var eventsJSON = {..., Events: [...]}`).
+
+    The overview JSON only carries DateArray for a few weeks ahead; the schedule
+    page has the real per-day reservations for any week. Each event becomes a
+    dated Lesson whose subject is the group code from LongText ("20SUK ...")
+    plus whatever qualifier Text adds ("Suomen kieli ja kirjallisuus SUPER" ->
+    "20SUK SUPER", "Käsityö.a" -> "20KS.a").
+    """
+    match = SCHEDULE_EVENTS_RE.search(html)
+    if not match:
+        return []
+    raw = _json_array_at(html, match.start(1))
+    if not raw:
+        return []
+    try:
+        events = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    out: list[Lesson] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("Tyyppi") or "Teaching") != "Teaching":
+            continue
+        day = parse_date(str(event.get("Date") or ""))
+        start, end = _minutes(event.get("Start")), _minutes(event.get("End"))
+        if not day or not start:
+            continue
+        text = _first_text(event, "Text")
+        long_text = _first_text(event, "LongText")
+        tokens = long_text.split()
+        subject = text
+        if tokens:
+            code = tokens[0]
+            base_name = re.sub(r"\s+lkaste:.*$", "", long_text[len(code):]).strip()
+            qualifier = text[len(base_name):] if base_name and text.startswith(base_name) else ""
+            subject = (code + qualifier).strip() or text
+        teacher = _event_teachers(event)
+        room = _first_text(event, "Huoneet")
+        out.append(
+            Lesson(
+                day=day.isoweekday(),
+                date=day.isoformat(),
+                start=start,
+                end=end,
+                subject=subject,
+                teacher=teacher,
+                room=room,
+                dates=[day.isoformat()],
+            )
+        )
+    out.sort(key=lambda item: (item.date, item.start))
+    return out
+
+
+async def _extend_schedule(session: aiohttp.ClientSession, base_url: str, user_id: str, data: SchoolData) -> None:
+    """Replace the overview's weekly slots with the schedule pages for the coming weeks.
+
+    The overview JSON gives each weekly slot a DateArray that Wilma caps a couple
+    of weeks ahead, and it knows nothing about cancelled or moved lessons or the
+    staff actually on a lesson. The schedule page has the real reservations for
+    any week, so for every week fetched here (this week + SCHEDULE_WEEKS_AHEAD)
+    its lessons win: those weekdays are dropped from the overview slots' DateArray
+    and the page's dated lessons are added. A week whose page fails to load keeps
+    the overview slots.
+    """
+    if not data.schedule:
+        return
+    today = datetime.now(ZoneInfo(TIMEZONE)).date()
+    monday = today - timedelta(days=today.weekday())
+    last = monday + timedelta(days=7 * SCHEDULE_WEEKS_AHEAD)
+    added: list[Lesson] = []
+    replaced: set[str] = set()
+    while monday <= last:
+        path = f"schedule?date={monday.strftime('%d.%m.%Y')}"
+        try:
+            status, payload, ctype = await _get(session, _abs(base_url, user_id, path))
+        except Exception as err:  # noqa: BLE001
+            data.probes.append(f"{path} ERR {err}")
+            break
+        if status != 200 or not isinstance(payload, str) or _looks_like_login_page(payload.lower()):
+            data.probes.append(f"{path} {status} {ctype.split(';')[0]}")
+            break
+        lessons = parse_schedule_events(payload)
+        data.probes.append(f"{path} 200 lessons={len(lessons)}")
+        added.extend(lessons)
+        replaced.update((monday + timedelta(days=offset)).isoformat() for offset in range(7))
+        monday += timedelta(days=7)
+    if not replaced:
+        return
+    for lesson in data.schedule:
+        if lesson.dates:
+            lesson.dates = [item for item in lesson.dates if item[:10] not in replaced]
+    data.schedule.extend(added)
+    data.schedule = _dedupe_lessons(data.schedule)
+
+
 async def load_school(session: aiohttp.ClientSession, base_url: str, user_id: str) -> SchoolData:
     data = SchoolData()
     data.children.append(Child(user_id=user_id))
@@ -696,6 +855,10 @@ async def load_school(session: aiohttp.ClientSession, base_url: str, user_id: st
         _parse_payload(payload, data, path)
         if len(data.notes) > before or isinstance(payload, dict):
             data.sources.append(path)
+    try:
+        await _extend_schedule(session, base_url, user_id, data)
+    except Exception as err:  # noqa: BLE001
+        data.probes.append(f"schedule-extend ERR {err}")
     data.notes = _dedupe_notes(data.notes)
     data.homework = _dedupe_homework(data.homework)
     data.sources = list(dict.fromkeys(data.sources))
