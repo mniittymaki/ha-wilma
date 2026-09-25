@@ -470,7 +470,59 @@ def _parse_short_date(text: str) -> str:
         return ""
 
 
+ATTENDANCE_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
+ATTENDANCE_DATE_RE = re.compile(r"<td[^>]*>\s*(\d{1,2}\.\d{1,2}\.\d{4})\s*</td>")
+ATTENDANCE_EVENT_RE = re.compile(r'<td[^>]*class="[^"]*\bevent\b[^"]*"[^>]*title="([^"]+)"', re.I)
+
+
+def _parse_attendance_rows(html: str) -> list[LessonNote]:
+    """Notes from the attendance/view table: one row per day, one event cell per note.
+
+    Cell title: "20UEEL03; Hyvä!; Hyvin sujunut oppitunti. /Katju Pitkänen" or
+    "20SUK03; Tiedoksi, Kotitehtävät tekemättä /Veera Witikainen".
+    """
+    notes: list[LessonNote] = []
+    for row in ATTENDANCE_ROW_RE.findall(html):
+        date_match = ATTENDANCE_DATE_RE.search(row)
+        if not date_match:
+            continue
+        day = parse_date(date_match.group(1))
+        if not day:
+            continue
+        for title in ATTENDANCE_EVENT_RE.findall(row):
+            title = title.replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'").strip()
+            teacher = ""
+            if " /" in title:
+                title, teacher = title.rsplit(" /", 1)
+            code, _, rest = title.partition(";")
+            code, rest = code.strip(), rest.strip()
+            kind, text = rest, ""
+            for sep in (";", ","):
+                if sep in rest:
+                    kind, text = (part.strip() for part in rest.split(sep, 1))
+                    break
+            notes.append(
+                LessonNote(
+                    date=day.isoformat(),
+                    subject=code,
+                    code=code,
+                    kind=kind or rest or "Merkintä",
+                    text=text,
+                    teacher=teacher.strip(),
+                )
+            )
+    return notes
+
+
 def _parse_attendance_html(html: str) -> list[LessonNote]:
+    notes = _parse_attendance_rows(html)
+    if notes:
+        return notes
+    return [note for note in _parse_attendance_fallback(html) if note.date or note.text]
+
+
+def _parse_attendance_fallback(html: str) -> list[LessonNote]:
+    """Token-based scrape for tenants without the attendance/view table."""
     notes: list[LessonNote] = []
     for title, extra in re.findall(
         r'(?:title|aria-label|data-original-title)="([^"]{2,160})"[^>]{0,200}?(?:data-(?:code|type|caption)="([^"]*)")?',
