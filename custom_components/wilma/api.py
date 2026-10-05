@@ -780,17 +780,22 @@ def _week_monday(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-def _extract_events_json(html: str) -> list[dict]:
-    match = re.search(r"eventsJSON\s*=\s*", html)
-    if not match:
-        return []
-    try:
-        payload, _end = json.JSONDecoder().raw_decode(html[match.end():])
-    except json.JSONDecodeError:
-        return []
-    if isinstance(payload, dict):
-        payload = payload.get("Events") or payload.get("events") or []
-    return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+def _extract_events_json(html: str) -> tuple[bool, list[dict]]:
+    """Return (found, events). Missing JSON must not wipe overview slots."""
+    for name in ("eventsJSON", "reservationsJSON", "scheduleJSON"):
+        match = re.search(rf"{name}\s*=\s*", html)
+        if not match:
+            continue
+        try:
+            payload, _end = json.JSONDecoder().raw_decode(html[match.end():])
+        except json.JSONDecodeError:
+            return True, []
+        if isinstance(payload, dict):
+            payload = payload.get("Events") or payload.get("events") or payload.get("Reservations") or []
+        if isinstance(payload, list):
+            return True, [item for item in payload if isinstance(item, dict)]
+        return True, []
+    return False, []
 
 
 def _schedule_subject(event: dict) -> str:
@@ -831,27 +836,41 @@ def _schedule_room(event: dict) -> str:
     return ""
 
 
-def _parse_schedule_html(html: str) -> list[Lesson]:
+def _parse_schedule_html(html: str) -> tuple[bool, int, list[Lesson]]:
+    found, events = _extract_events_json(html)
     lessons: list[Lesson] = []
-    for event in _extract_events_json(html):
-        start_raw = str(event.get("Start") or event.get("start") or "")
-        end_raw = str(event.get("End") or event.get("end") or "")
+    for event in events:
+        start_raw = str(
+            event.get("Start")
+            or event.get("start")
+            or event.get("Alkaa")
+            or event.get("alkaa")
+            or ""
+        )
+        end_raw = str(event.get("End") or event.get("end") or event.get("Loppuu") or event.get("loppuu") or "")
         start_dt = None
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
-            try:
-                start_dt = datetime.strptime(start_raw[:19], fmt)
+        for raw in (start_raw[:19], start_raw):
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%d.%m.%Y %H:%M"):
+                try:
+                    start_dt = datetime.strptime(raw[:19], fmt)
+                    break
+                except ValueError:
+                    continue
+            if start_dt:
                 break
-            except ValueError:
-                continue
         if start_dt is None:
             continue
         end_clock = ""
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
-            try:
-                end_clock = datetime.strptime(end_raw[:19], fmt).strftime("%H:%M")
+        for raw in (end_raw[:19], end_raw):
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%H:%M"):
+                try:
+                    parsed = datetime.strptime(raw[:19] if fmt != "%H:%M" else raw[:5], fmt)
+                    end_clock = parsed.strftime("%H:%M")
+                    break
+                except ValueError:
+                    continue
+            if end_clock:
                 break
-            except ValueError:
-                continue
         day = start_dt.date()
         lessons.append(
             Lesson(
@@ -865,7 +884,7 @@ def _parse_schedule_html(html: str) -> list[Lesson]:
                 dates=[day.isoformat()],
             )
         )
-    return lessons
+    return found, len(events), lessons
 
 
 def _strip_covered_week(lessons: list[Lesson], monday: date) -> None:
@@ -899,7 +918,13 @@ async def _load_schedule_weeks(session: aiohttp.ClientSession, base_url: str, us
         if status != 200 or not isinstance(payload, str):
             data.probes.append(f"{path} {status} lessons=0")
             continue
-        lessons = _parse_schedule_html(payload)
+        found, event_count, lessons = _parse_schedule_html(payload)
+        if not found:
+            data.probes.append(f"{path} {status} lessons=0 no-json")
+            continue
+        if event_count and not lessons:
+            data.probes.append(f"{path} {status} lessons=0 unparsed")
+            continue
         data.probes.append(f"{path} {status} lessons={len(lessons)}")
         data.covered_weeks.append(week.isoformat())
         _strip_covered_week(data.schedule, week)
