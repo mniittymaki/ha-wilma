@@ -307,6 +307,7 @@ class PositiveSensor(Base):
     _attr_icon = "mdi:thumb-up"
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _unrecorded_attributes = frozenset({"notes"})
 
     def __init__(self, coordinator, entry, child_id=None, child_name=None):
         super().__init__(coordinator, entry, "positives", child_id, child_name)
@@ -319,10 +320,21 @@ class PositiveSensor(Base):
     def extra_state_attributes(self) -> dict:
         if not self.school:
             return {}
-        return {
-            f"item_{i}": _join(n.date, n.kind, n.subject, n.text)
+        attrs: dict = {
+            f"item_{i}": _join(n.date, n.kind, n.subject, n.teacher, n.text)
             for i, n in enumerate(self.school.positives[:10], start=1)
         }
+        attrs["notes"] = [
+            {
+                "date": n.date,
+                "kind": n.kind,
+                "subject": n.subject or n.code,
+                "teacher": n.teacher,
+                "text": n.text,
+            }
+            for n in self.school.positives[:10]
+        ]
+        return attrs
 
 
 class RemarkSensor(Base):
@@ -330,6 +342,7 @@ class RemarkSensor(Base):
     _attr_icon = "mdi:thumb-down-outline"
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _unrecorded_attributes = frozenset({"notes"})
 
     def __init__(self, coordinator, entry, child_id=None, child_name=None):
         super().__init__(coordinator, entry, "remarks", child_id, child_name)
@@ -342,10 +355,21 @@ class RemarkSensor(Base):
     def extra_state_attributes(self) -> dict:
         if not self.school:
             return {}
-        return {
+        attrs: dict = {
             f"item_{i}": _join(n.date, n.time, n.kind, n.subject, n.teacher, n.text)
             for i, n in enumerate(self.school.remarks[:15], start=1)
         }
+        attrs["notes"] = [
+            {
+                "date": n.date,
+                "kind": n.kind,
+                "subject": n.subject or n.code,
+                "teacher": n.teacher,
+                "text": n.text,
+            }
+            for n in self.school.remarks[:15]
+        ]
+        return attrs
 
 
 class LatestNoteSensor(Base):
@@ -383,7 +407,11 @@ class TodaySensor(Base):
     def _today(self):
         if not self.school:
             return []
-        return lessons_for_day(self.school.schedule, datetime.now(ZoneInfo(TIMEZONE)).date())
+        return lessons_for_day(
+            self.school.schedule,
+            datetime.now(ZoneInfo(TIMEZONE)).date(),
+            self.school.covered_weeks,
+        )
 
     @property
     def native_value(self) -> str:
@@ -404,6 +432,7 @@ class TodaySensor(Base):
 class NextLessonSensor(Base):
     _attr_name = "Seuraava tunti"
     _attr_icon = "mdi:calendar-clock"
+    _unrecorded_attributes = frozenset({"schedule"})
 
     def __init__(self, coordinator, entry, child_id=None, child_name=None):
         super().__init__(coordinator, entry, "next_lesson", child_id, child_name)
@@ -412,7 +441,7 @@ class NextLessonSensor(Base):
     def native_value(self) -> str:
         if not self.school:
             return "Ei lukujärjestystä"
-        lesson = next_lesson(self.school.schedule)
+        lesson = next_lesson(self.school.schedule, covered_weeks=self.school.covered_weeks)
         if not lesson:
             return "Ei lukujärjestystä"
         return _join(lesson.date, lesson.start, lesson.subject, lesson.room) or "Tunti"
@@ -421,9 +450,10 @@ class NextLessonSensor(Base):
     def extra_state_attributes(self) -> dict:
         if not self.school:
             return {}
-        attrs = {"lesson_count": len(self.school.schedule)}
+        weekly = [lesson for lesson in self.school.schedule if not lesson.date]
+        attrs = {"lesson_count": len(weekly)}
         ordered = sorted(
-            self.school.schedule,
+            weekly,
             key=lambda item: (item.day or 99, item.start or "", item.subject or ""),
         )
         for i, lesson in enumerate(ordered[:40], start=1):
@@ -435,6 +465,18 @@ class NextLessonSensor(Base):
                 lesson.teacher,
                 lesson.room,
             )
+        attrs["schedule"] = [
+            {
+                "day": lesson.day,
+                "start": lesson.start,
+                "end": lesson.end,
+                "subject": lesson.subject,
+                "teacher": lesson.teacher,
+                "room": lesson.room,
+                "dates": sorted({d.isoformat() for d in map(parse_date, lesson.dates) if d}),
+            }
+            for lesson in ordered
+        ]
         return attrs
 
 
@@ -625,6 +667,7 @@ class ChildUnreadSensor(Base):
     _attr_icon = "mdi:email-alert"
     _attr_native_unit_of_measurement = "kpl"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _unrecorded_attributes = frozenset({"messages", "pinned"})
 
     def __init__(self, coordinator, entry, child_id=None, child_name=None):
         super().__init__(coordinator, entry, "child_unread", child_id, child_name)
@@ -653,4 +696,15 @@ class ChildUnreadSensor(Base):
         for i, msg in enumerate(cm.messages[:10], start=1):
             flag = "● " if msg.unread else ""
             attrs[f"msg_{i}"] = f"{flag}{_join(msg.timestamp, msg.subject, msg.sender)}"
+        attrs["messages"] = [
+            {
+                "id": msg.id,
+                "timestamp": msg.timestamp,
+                "subject": msg.subject,
+                "sender": msg.sender,
+                "unread": msg.unread,
+            }
+            for msg in cm.messages
+        ]
+        attrs["pinned"] = self.coordinator.pinned(self._child_id)
         return attrs

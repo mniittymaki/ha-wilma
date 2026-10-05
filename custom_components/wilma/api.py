@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import json
 import logging
 import re
+from html import unescape as _html_unescape
 from typing import Any
 
 import aiohttp
@@ -41,7 +42,9 @@ NOTE_HTML_TOKENS = (
     "tehtäviä tekemättä",
     "käytöksessäsi",
     "et osallistunut",
-    "moite",
+    "kotitehtävät",
+    "tekemättä",
+    "tiedoksi",
     "huom",
     "terveys",
     "luvall",
@@ -393,15 +396,15 @@ def _dedupe_notes(notes: list[LessonNote]) -> list[LessonNote]:
 
 
 def _dedupe_lessons(lessons: list[Lesson]) -> list[Lesson]:
-    seen: set[tuple[int, str, str, str]] = set()
+    seen: set[tuple[str, int, str, str, str]] = set()
     out: list[Lesson] = []
     for lesson in lessons:
-        key = (lesson.day, lesson.start, lesson.end, lesson.subject)
+        key = (lesson.date, lesson.day, lesson.start, lesson.end, lesson.subject)
         if key in seen:
             continue
         seen.add(key)
         out.append(lesson)
-    out.sort(key=lambda item: (item.day, item.start or ""))
+    out.sort(key=lambda item: (item.date or "", item.day, item.start or ""))
     return out
 
 
@@ -470,27 +473,97 @@ def _parse_short_date(text: str) -> str:
         return ""
 
 
-def _parse_attendance_html(html: str) -> list[LessonNote]:
+def _note_from_event_title(title: str, date_s: str) -> LessonNote | None:
+    """Parse '20UEEL03; Hyvä!; Hyvin sujunut. /Katju Pitkänen'."""
+    raw = _html_unescape(title)
+    if not raw or raw.casefold() in {"tuntimerkinnät", "merkinnät", "merkinta"}:
+        return None
+    teacher = ""
+    body = raw
+    if "/" in raw:
+        body, teacher = raw.rsplit("/", 1)
+        teacher = teacher.strip(" ;,")
+    parts = [part.strip(" ;,") for part in body.split(";") if part.strip(" ;,")]
+    code = kind = text = ""
+    if len(parts) >= 3:
+        code, kind, text = parts[0], parts[1], "; ".join(parts[2:])
+    elif len(parts) == 2:
+        code, rest = parts
+        if "," in rest:
+            kind, text = [piece.strip() for piece in rest.split(",", 1)]
+        else:
+            kind = rest
+    elif parts:
+        kind = parts[0]
+    else:
+        return None
+    if not re.match(r"^[0-9A-Za-zÅÄÖåäö.]{2,16}$", code):
+        text = " ".join(part for part in (code, kind, text) if part)
+        code = ""
+        kind = kind or text
+    if not (kind or text or code):
+        return None
+    return LessonNote(
+        date=date_s,
+        subject=code,
+        code=code,
+        kind=kind,
+        text=text,
+        teacher=teacher,
+    )
+
+
+def _row_date(row_html: str) -> str:
+    dated = re.search(r'data-date="(\d{4}-\d{2}-\d{2})"', row_html, flags=re.IGNORECASE)
+    if dated:
+        return dated.group(1)
+    # Date cell, not an event title. Weekday prefix is fine: "to 24.9."
+    cell = re.search(
+        r"<t[dh][^>]*>\s*(?:[a-zåäö]{2}\s+)?(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.(?:\d{4})?)",
+        row_html,
+        flags=re.IGNORECASE,
+    )
+    if cell:
+        return _parse_short_date(cell.group(1))
+    return ""
+
+
+def _parse_attendance_table(html: str) -> list[LessonNote]:
     notes: list[LessonNote] = []
+    for row in re.findall(r"<tr\b[^>]*>.*?</tr>", html, flags=re.IGNORECASE | re.DOTALL):
+        date_s = _row_date(row)
+        if not date_s:
+            continue
+        for title in re.findall(r'(?:title|data-original-title)="([^"]{3,240})"', row, flags=re.IGNORECASE):
+            note = _note_from_event_title(title, date_s)
+            if note:
+                notes.append(note)
+    return notes
+
+
+def _parse_attendance_html(html: str) -> list[LessonNote]:
+    notes = _parse_attendance_table(html)
+    seen_titles = {f"{note.code}; {note.kind}".casefold() for note in notes if note.code and note.kind}
     for title, extra in re.findall(
         r'(?:title|aria-label|data-original-title)="([^"]{2,160})"[^>]{0,200}?(?:data-(?:code|type|caption)="([^"]*)")?',
         html,
         flags=re.IGNORECASE,
     ):
+        if any(f"{note.code}; {note.kind}".casefold() in _html_unescape(title).casefold() for note in notes if note.code):
+            continue
         blob = f"{title} {extra}".lower()
+        date_s = _parse_short_date(title) or _parse_short_date(extra)
+        text = (extra or "").strip()
+        # Header title="Tuntimerkinnät" has neither date nor text.
+        if not date_s and not text:
+            continue
         if not any(token in blob for token in NOTE_HTML_TOKENS):
             continue
-        notes.append(
-            LessonNote(
-                date=_parse_short_date(title) or _parse_short_date(extra),
-                kind=title.strip(),
-                text=(extra or "").strip(),
-            )
-        )
+        notes.append(LessonNote(date=date_s, kind=title.strip(), text=text))
     for date_s, kind, extra in re.findall(
         r"(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4}|\d{1,2}\.\d{1,2}\.)\s*.{0,160}?"
         r"(Poissa|Myöhässä|Lupa|Selvitys|Selvittämätön|Selvittämättä|Selvitettävä|"
-        r"Sairaana|Huomautus|Kehu|Kiitos|Hyvä|Myöh)([^<]{0,120})",
+        r"Sairaana|Huomautus|Kehu|Kiitos|Hyvä|Myöh|Tiedoksi)([^<]{0,120})",
         html,
         flags=re.IGNORECASE,
     ):
@@ -699,32 +772,181 @@ async def load_school(session: aiohttp.ClientSession, base_url: str, user_id: st
     data.notes = _dedupe_notes(data.notes)
     data.homework = _dedupe_homework(data.homework)
     data.sources = list(dict.fromkeys(data.sources))
+    await _load_schedule_weeks(session, base_url, user_id, data)
     return data
 
 
-def lessons_for_day(schedule: list[Lesson], target: date) -> list[Lesson]:
+def _week_monday(day: date) -> date:
+    return day - timedelta(days=day.weekday())
+
+
+def _extract_events_json(html: str) -> list[dict]:
+    match = re.search(r"eventsJSON\s*=\s*", html)
+    if not match:
+        return []
+    try:
+        payload, _end = json.JSONDecoder().raw_decode(html[match.end():])
+    except json.JSONDecodeError:
+        return []
+    if isinstance(payload, dict):
+        payload = payload.get("Events") or payload.get("events") or []
+    return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+def _schedule_subject(event: dict) -> str:
+    long = str(event.get("LongText") or event.get("longText") or "").strip()
+    text = str(event.get("Text") or event.get("text") or "").strip()
+    if text and text not in long:
+        subject = f"{long}{text}" if text.startswith(".") else f"{long} {text}".strip()
+    else:
+        subject = long or text
+    if event.get("Peruttu") or event.get("Cancelled") or event.get("peruttu"):
+        subject = f"Peruttu {subject}".strip()
+    return subject
+
+
+def _schedule_teacher(event: dict) -> str:
+    info = event.get("OpeInfo") or event.get("opeInfo") or {}
+    if not isinstance(info, dict):
+        info = {}
+    codes = event.get("Opet") or event.get("opet") or []
+    if isinstance(codes, str):
+        codes = [codes]
+    names = []
+    for code in codes:
+        code_s = str(code).strip()
+        if not code_s:
+            continue
+        name = str(info.get(code_s) or info.get(code) or "").strip()
+        names.append(f"{name} ({code_s})" if name else code_s)
+    return ", ".join(names)
+
+
+def _schedule_room(event: dict) -> str:
+    rooms = event.get("Huoneet") or event.get("huoneet") or event.get("Rooms") or []
+    if isinstance(rooms, str):
+        return rooms
+    if isinstance(rooms, list):
+        return ", ".join(str(room).strip() for room in rooms if str(room).strip())
+    return ""
+
+
+def _parse_schedule_html(html: str) -> list[Lesson]:
+    lessons: list[Lesson] = []
+    for event in _extract_events_json(html):
+        start_raw = str(event.get("Start") or event.get("start") or "")
+        end_raw = str(event.get("End") or event.get("end") or "")
+        start_dt = None
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
+            try:
+                start_dt = datetime.strptime(start_raw[:19], fmt)
+                break
+            except ValueError:
+                continue
+        if start_dt is None:
+            continue
+        end_clock = ""
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
+            try:
+                end_clock = datetime.strptime(end_raw[:19], fmt).strftime("%H:%M")
+                break
+            except ValueError:
+                continue
+        day = start_dt.date()
+        lessons.append(
+            Lesson(
+                day=day.isoweekday(),
+                date=day.isoformat(),
+                start=start_dt.strftime("%H:%M"),
+                end=end_clock,
+                subject=_schedule_subject(event),
+                teacher=_schedule_teacher(event),
+                room=_schedule_room(event),
+                dates=[day.isoformat()],
+            )
+        )
+    return lessons
+
+
+def _strip_covered_week(lessons: list[Lesson], monday: date) -> None:
+    """Overview slots must not fill a week the schedule page already answered."""
+    sunday = monday + timedelta(days=6)
+    for lesson in lessons:
+        if lesson.date:
+            continue
+        kept = []
+        for raw in lesson.dates:
+            parsed = parse_date(raw)
+            if parsed and monday <= parsed <= sunday:
+                continue
+            kept.append(raw)
+        lesson.dates = kept
+
+
+async def _load_schedule_weeks(session: aiohttp.ClientSession, base_url: str, user_id: str, data: SchoolData) -> None:
+    """This week and the next four. A failed page keeps the overview slots."""
+    today = datetime.now(ZoneInfo(TIMEZONE)).date()
+    monday = _week_monday(today)
+    for offset in range(5):
+        week = monday + timedelta(weeks=offset)
+        stamp = week.strftime("%d.%m.%Y")
+        path = f"schedule?date={stamp}"
+        try:
+            status, payload, _ctype = await _get(session, _abs(base_url, user_id, path))
+        except Exception as err:  # noqa: BLE001
+            data.probes.append(f"{path} ERR {err}")
+            continue
+        if status != 200 or not isinstance(payload, str):
+            data.probes.append(f"{path} {status} lessons=0")
+            continue
+        lessons = _parse_schedule_html(payload)
+        data.probes.append(f"{path} {status} lessons={len(lessons)}")
+        data.covered_weeks.append(week.isoformat())
+        _strip_covered_week(data.schedule, week)
+        data.schedule.extend(lessons)
+    data.schedule = _dedupe_lessons(data.schedule)
+
+
+def lessons_for_day(schedule: list[Lesson], target: date, covered_weeks: list[str] | None = None) -> list[Lesson]:
     weekday = target.isoweekday()
     iso = target.isoformat()
-    out: list[Lesson] = []
+    covered = set(covered_weeks or [])
+    if _week_monday(target).isoformat() in covered:
+        out = [lesson for lesson in schedule if lesson.date and parse_date(lesson.date) == target]
+        out.sort(key=lambda item: item.start or "")
+        return out
+    out = []
     for lesson in schedule:
+        if lesson.date:
+            continue
         dates = {parse_date(item).isoformat() for item in lesson.dates if parse_date(item)}
-        if iso in dates or (lesson.date and parse_date(lesson.date) == target):
-            out.append(lesson)
-        elif not dates and not lesson.date and lesson.day == weekday:
+        if iso in dates or (not dates and lesson.day == weekday):
             out.append(lesson)
     out.sort(key=lambda item: item.start or "")
     return out
 
 
-def next_lesson(schedule: list[Lesson], now: datetime | None = None) -> Lesson | None:
+def next_lesson(schedule: list[Lesson], now: datetime | None = None, covered_weeks: list[str] | None = None) -> Lesson | None:
     now = now or datetime.now(ZoneInfo(TIMEZONE))
     today = now.date()
-    for offset in range(0, 8):
+    for offset in range(0, 21):
         day = today + timedelta(days=offset)
-        for lesson in lessons_for_day(schedule, day):
+        for lesson in lessons_for_day(schedule, day, covered_weeks):
             start = parse_time(lesson.start)
             if offset == 0 and start and datetime.combine(day, start, tzinfo=now.tzinfo) <= now:
                 continue
-            lesson.date = day.isoformat()
+            if not lesson.date:
+                lesson = Lesson(
+                    day=lesson.day,
+                    date=day.isoformat(),
+                    start=lesson.start,
+                    end=lesson.end,
+                    subject=lesson.subject,
+                    teacher=lesson.teacher,
+                    room=lesson.room,
+                    dates=list(lesson.dates),
+                )
+            else:
+                lesson.date = day.isoformat()
             return lesson
     return None

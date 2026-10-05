@@ -1,0 +1,56 @@
+get_message:
+  fields:
+    entity_id:
+      example: sensor.aino_esimerkki_uudet_viestit
+      selector:
+        entity:
+          integration: wilma
+    device_id:
+      selector:
+        device:
+          integration: wilma
+    message_id:
+      required: true
+      example: 1234567
+      selector:
+        number:
+          mode: box
+          min: 1
+
+pin_message:
+  fields:
+    entity_id:
+      example: sensor.aino_esimerkki_uudet_viestit
+      selector:
+        entity:
+          integration: wilma
+    device_id:
+      selector:
+        device:
+          integration: wilma
+    message_id:
+      required: true
+      example: 1234567
+      selector:
+        number:
+          mode: box
+          min: 1
+
+unpin_message:
+  fields:
+    entity_id:
+      example: sensor.aino_esimerkki_uudet_viestit
+      selector:
+        entity:
+          integration: wilma
+    device_id:
+      selector:
+        device:
+          integration: wilma
+    message_id:
+      required: true
+      example: 1234567
+      selector:
+        number:
+          mode: box
+          min: 1

@@ -92,6 +92,7 @@ class SchoolData:
     sample_note: str = ""
     sample_exam: str = ""
     sample_hw: str = ""
+    covered_weeks: list[str] = field(default_factory=list)
 
     @property
     def absences(self) -> list[LessonNote]:
@@ -107,11 +108,11 @@ class SchoolData:
 
     @property
     def positives(self) -> list[LessonNote]:
-        return [n for n in self.notes if _match(n, POSITIVE)]
+        return [n for n in self.notes if _tone(n) == "positive"]
 
     @property
     def remarks(self) -> list[LessonNote]:
-        return [n for n in self.notes if _match(n, REMARK) and not _match(n, POSITIVE)]
+        return [n for n in self.notes if _tone(n) == "remark"]
 
     @property
     def unread_grades(self) -> list[Exam]:
@@ -129,6 +130,7 @@ ABSENCE = (
     "luvallinen",
     "terveys",
     "terveydellinen",
+    "lääkäri",
     "sel",
     "ter",
     "lup",
@@ -142,7 +144,12 @@ POSITIVE = (
     "+teh",
     "+koe",
     "hyvä",
+    "hyvin",
     "hyve",
+    "positiivi",
+    "erinomai",
+    "ahkera",
+    "moitteeton",
     "pitkäjänteisesti",
     "sinnikkäästi",
     "vastuuta omasta oppimisesta",
@@ -158,6 +165,13 @@ REMARK = (
     "häiritsit työskentelyä",
     "opiskeluvälineitä",
     "tehtäviä tekemättä",
+    "tekemättä",
+    "unohtu",
+    "unohta",
+    "puuttu",
+    "häiri",
+    "epäasialli",
+    "huomautus",
     "käytöksessäsi",
     "et osallistunut",
     "moite",
@@ -168,3 +182,18 @@ REMARK = (
 def _match(note: LessonNote, tokens: tuple[str, ...]) -> bool:
     blob = f"{note.kind} {note.text} {note.code}".lower()
     return any(token in blob for token in tokens)
+
+
+def _has(blob: str, tokens: tuple[str, ...]) -> bool:
+    blob = blob.lower()
+    return any(token in blob for token in tokens)
+
+
+def _tone(note: LessonNote) -> str:
+    """Praise or remark. Type name wins; free text is used only if the type is silent."""
+    for blob in (f"{note.kind} {note.code}", note.text):
+        if _has(blob, POSITIVE):
+            return "positive"
+        if _has(blob, REMARK):
+            return "remark"
+    return ""

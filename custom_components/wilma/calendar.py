@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import parse_date, parse_time
+from .api import lessons_for_day, parse_date, parse_time
 from .const import DOMAIN, TIMEZONE
 from .coordinator import WilmaCoordinator, children_from_entry
 
@@ -72,15 +72,7 @@ class WilmaCalendar(CoordinatorEntity[WilmaCoordinator], CalendarEntity):
 
         cursor = start
         while cursor <= end:
-            weekday = cursor.isoweekday()
-            iso = cursor.isoformat()
-            for lesson in school.schedule:
-                dates = {parse_date(item).isoformat() for item in lesson.dates if parse_date(item)}
-                matches = iso in dates or (lesson.date and parse_date(lesson.date) == cursor)
-                if not matches and not dates and not lesson.date and lesson.day == weekday:
-                    matches = True
-                if not matches:
-                    continue
+            for lesson in lessons_for_day(school.schedule, cursor, school.covered_weeks):
                 events.append(
                     _timed(
                         cursor,

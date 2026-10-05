@@ -11,6 +11,8 @@ list page. Key spellings vary between Wilma versions, hence the probing.
 """
 from __future__ import annotations
 
+from html import unescape
+from html.parser import HTMLParser
 import json
 import logging
 import re
@@ -270,3 +272,122 @@ async def fetch_messages_json(
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Wilma JSON message fetch failed: %s", err)
     return []
+
+
+class MessageNotFound(Exception):
+    """Wilma returned no message for the id (deleted, or another role's inbox)."""
+
+
+BODY_KEYS = ("ContentHtml", "contentHtml", "Content", "content", "Body", "body")
+REPLY_KEYS = ("ReplyList", "replyList", "Replies", "replies")
+_BLOCK_TAGS = {"p", "div", "tr", "table", "ul", "ol", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"}
+
+
+class _TextExtractor(HTMLParser):
+    """Message HTML to plain text: paragraphs, line breaks, list items and link targets."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._href = ""
+        self._link_text = ""
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("script", "style"):
+            self._skip += 1
+        elif tag == "br":
+            self.parts.append("\n")
+        elif tag == "li":
+            self.parts.append("\n- ")
+        elif tag in _BLOCK_TAGS:
+            self.parts.append("\n\n")
+        elif tag == "a":
+            self._href = (dict(attrs).get("href") or "").strip()
+            self._link_text = ""
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style"):
+            self._skip = max(0, self._skip - 1)
+        elif tag in _BLOCK_TAGS:
+            self.parts.append("\n\n")
+        elif tag == "a":
+            href, shown = self._href, self._link_text.strip()
+            self._href = ""
+            # Keep the target when the visible text hides it.
+            if href.startswith(("http://", "https://")) and href not in shown:
+                self.parts.append(f" ({href})")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip:
+            return
+        if self._href:
+            self._link_text += data
+        self.parts.append(data)
+
+
+def html_to_text(html: str) -> str:
+    """Plain text of a message body. The card never has to render Wilma's HTML."""
+    if not html:
+        return ""
+    parser = _TextExtractor()
+    parser.feed(str(html))
+    parser.close()
+    text = unescape("".join(parser.parts)).replace("\xa0", " ").replace("\r", "")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" ?\n ?", "\n", text)
+    # <li><p>text</p></li>: keep the bullet on the line of its text, items on consecutive lines.
+    text = re.sub(r"(?m)^-\n+(?=\S)", "- ", text)
+    text = re.sub(r"(?m)^(- [^\n]*)\n{2,}(?=- )", r"\1\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _first(item: dict, keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if item.get(key):
+            return item[key]
+    return None
+
+
+def parse_message_detail(payload: Any) -> dict:
+    """One message with its body from `messages/<id>?format=json`."""
+    items = payload.get("messages") or payload.get("Messages") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+        raise MessageNotFound("no message in response")
+    item = items[0]
+    replies = []
+    for reply in _first(item, REPLY_KEYS) or []:
+        if isinstance(reply, dict):
+            replies.append({
+                "sender": str(reply.get("Sender") or reply.get("sender") or ""),
+                "timestamp": str(reply.get("TimeStamp") or reply.get("timestamp") or ""),
+                "content": html_to_text(_first(reply, BODY_KEYS) or ""),
+            })
+    return {
+        "id": _msg_id(item),
+        "subject": str(item.get("Subject") or item.get("subject") or ""),
+        "sender": str(item.get("Sender") or item.get("sender") or ""),
+        "timestamp": str(item.get("TimeStamp") or item.get("timestamp") or ""),
+        "content": html_to_text(_first(item, BODY_KEYS) or ""),
+        "replies": replies,
+    }
+
+
+async def fetch_message(
+    session: aiohttp.ClientSession, base_url: str, user_id: str, message_id: int
+) -> dict:
+    """Fetch one message with its body. Wilma marks the message as read."""
+    base = base_url.rstrip("/")
+    uid = str(user_id).strip("/")
+    url = f"{base}/{uid}/messages/{int(message_id)}"
+    async with session.get(url, params={"format": "json"}, allow_redirects=True) as resp:
+        status = resp.status
+        text = await resp.text() if status < 400 else ""
+    if status >= 400:
+        # Wilma answers 403/404 both for an unknown id and for a dead session.
+        raise MessageNotFound(f"HTTP {status}")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as err:
+        raise MessageNotFound("Wilma did not return JSON (session expired?)") from err
+    return parse_message_detail(payload)

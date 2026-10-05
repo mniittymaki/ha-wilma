@@ -12,6 +12,7 @@ from wilhelmina import AuthenticationError, WilmaClient, WilmaError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import load_school
@@ -27,7 +28,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
-from .messages import fetch_messages_html, fetch_messages_json, fetch_unread_ids
+from .messages import fetch_message, fetch_messages_html, fetch_messages_json, fetch_unread_ids
 from .models import SchoolData
 from .roles import _is_named_child, _norm_id, switch_child
 
@@ -106,8 +107,49 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
         self.client: WilmaClient | None = None
         self._logged_in = False
         self._known_unread_ids: set[int] = set()
+        self._message_cache: dict[tuple[str, int], dict] = {}
+        self._pins: dict[str, list[dict]] = {}
+        self._pin_store: Store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.pins")
+
+    def pinned(self, child_id: str) -> list[dict]:
+        return list(self._pins.get(child_id, []))
+
+    async def async_pin_message(self, child_id: str, message_id: int) -> None:
+        """Pin one listed message. Stored per child so every dashboard user sees it."""
+        message_id = int(message_id)
+        pins = self._pins.setdefault(child_id, [])
+        if any(pin["id"] == message_id for pin in pins):
+            return
+        listed = self.data.child_messages.get(child_id) if self.data else None
+        found = next((m for m in (listed.messages if listed else []) if int(m.id) == message_id), None)
+        if found is None:
+            raise ValueError(f"message {message_id} is not among the listed messages")
+        pins.append({
+            "id": message_id,
+            "subject": found.subject,
+            "sender": found.sender,
+            "timestamp": found.timestamp,
+        })
+        await self._pin_store.async_save(self._pins)
+        self.async_update_listeners()
+
+    async def async_unpin_message(self, child_id: str, message_id: int) -> None:
+        pins = self._pins.get(child_id, [])
+        kept = [pin for pin in pins if pin["id"] != int(message_id)]
+        if len(kept) == len(pins):
+            return
+        self._pins[child_id] = kept
+        await self._pin_store.async_save(self._pins)
+        self.async_update_listeners()
 
     async def async_setup(self) -> None:
+        stored = await self._pin_store.async_load()
+        if isinstance(stored, dict):
+            self._pins = {
+                str(child): [pin for pin in pins if isinstance(pin, dict) and pin.get("id")]
+                for child, pins in stored.items()
+                if isinstance(pins, list)
+            }
         self._session = aiohttp.ClientSession(headers=BROWSER_HEADERS)
         self.client = WilmaClient(self.entry.data[CONF_URL], session=self._session, headless=True)
         self._pin_role_across_reauth()
@@ -222,6 +264,21 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
                 _LOGGER.debug("Wilma HTML messages failed for %s: %s", child_id, err)
 
         return messages
+
+    async def async_get_message(self, child_id: str, message_id: int) -> dict:
+        """One message body, fetched on demand. Wilma marks it read, so this is never polled."""
+        key = (child_id, int(message_id))
+        if key in self._message_cache:
+            return self._message_cache[key]
+        if self._session is None or not self._logged_in:
+            raise WilmaError("Wilma session is not ready, try again after the next update")
+        base = self.entry.data[CONF_URL]
+        uid = _norm_id(child_id) or self._child_uid()
+        async with _account_lock(self.hass, account_key(self.entry)):
+            await switch_child(self._session, base, uid)
+            message = await fetch_message(self._session, base, uid, message_id)
+        self._message_cache[key] = message
+        return message
 
     async def _load_child_school(self, child_id: str, child_name: str) -> SchoolData | None:
         """Fetch one child's school pages. Relogin + retry on collision / dead session.
