@@ -1,5 +1,5 @@
 DOMAIN = "wilma"
-VERSION = "1.2.16"
+VERSION = "1.2.17"
 DEFAULT_URL = "https://helsinki.inschool.fi"
 DEFAULT_SCAN_INTERVAL = 300
 

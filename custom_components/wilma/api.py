@@ -780,51 +780,92 @@ def _week_monday(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
-def _extract_events_json(html: str) -> tuple[bool, list[dict]]:
-    """Return (found, events). Missing JSON must not wipe overview slots."""
-    for name in ("eventsJSON", "reservationsJSON", "scheduleJSON"):
-        match = re.search(rf"{name}\s*=\s*", html)
-        if not match:
-            continue
+def _extract_events_json(html: str) -> tuple[bool, list[dict] | None]:
+    """Return (found, events). None means the blob was there but did not parse."""
+    match = re.search(r"eventsJSON\s*=\s*", html)
+    if not match:
+        return False, []
+    blob = html[match.end():]
+    events_match = re.search(r"Events\s*:\s*(\[[\s\S]*?\])\s*,\s*ActiveTyyppi", blob)
+    if events_match:
         try:
-            payload, _end = json.JSONDecoder().raw_decode(html[match.end():])
+            payload = json.loads(events_match.group(1))
         except json.JSONDecodeError:
-            return True, []
-        if isinstance(payload, dict):
-            payload = payload.get("Events") or payload.get("events") or payload.get("Reservations") or []
-        if isinstance(payload, list):
-            return True, [item for item in payload if isinstance(item, dict)]
-        return True, []
-    return False, []
+            return True, None
+        return True, [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else None
+    try:
+        payload, _end = json.JSONDecoder().raw_decode(blob)
+    except json.JSONDecodeError:
+        return True, None
+    if isinstance(payload, dict):
+        payload = payload.get("Events") or payload.get("events") or []
+    if isinstance(payload, list):
+        return True, [item for item in payload if isinstance(item, dict)]
+    return True, None
+
+
+def _first_text(value: Any) -> str:
+    if isinstance(value, dict):
+        for item in value.values():
+            text = _first_text(item)
+            if text:
+                return text
+        return ""
+    if isinstance(value, list):
+        return _first_text(value[0]) if value else ""
+    return str(value or "").strip()
+
+
+def _minutes(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    total = int(value)
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def _schedule_subject(event: dict) -> str:
-    long = str(event.get("LongText") or event.get("longText") or "").strip()
-    text = str(event.get("Text") or event.get("text") or "").strip()
-    if text and text not in long:
+    long = _first_text(event.get("LongText") or event.get("longText"))
+    text = _first_text(event.get("Text") or event.get("text"))
+    if text and long and text not in long and long not in text:
         subject = f"{long}{text}" if text.startswith(".") else f"{long} {text}".strip()
     else:
-        subject = long or text
+        subject = text or long
     if event.get("Peruttu") or event.get("Cancelled") or event.get("peruttu"):
         subject = f"Peruttu {subject}".strip()
     return subject
 
 
 def _schedule_teacher(event: dict) -> str:
+    names: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            name = str(node.get("nimi") or node.get("Nimi") or "").strip()
+            code = str(node.get("lyhenne") or node.get("Lyhenne") or "").strip()
+            if name or code:
+                names.append(f"{name} ({code})" if name and code else name or code)
+                return
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(event.get("OpeInfo") or event.get("opeInfo") or {})
+    if names:
+        return ", ".join(dict.fromkeys(names))
     info = event.get("OpeInfo") or event.get("opeInfo") or {}
-    if not isinstance(info, dict):
-        info = {}
     codes = event.get("Opet") or event.get("opet") or []
     if isinstance(codes, str):
         codes = [codes]
-    names = []
+    fallback = []
     for code in codes:
         code_s = str(code).strip()
         if not code_s:
             continue
-        name = str(info.get(code_s) or info.get(code) or "").strip()
-        names.append(f"{name} ({code_s})" if name else code_s)
-    return ", ".join(names)
+        name = str(info.get(code_s) or "").strip() if isinstance(info, dict) else ""
+        fallback.append(f"{name} ({code_s})" if name else code_s)
+    return ", ".join(fallback)
 
 
 def _schedule_room(event: dict) -> str:
@@ -836,47 +877,41 @@ def _schedule_room(event: dict) -> str:
     return ""
 
 
-def _parse_schedule_html(html: str) -> tuple[bool, int, list[Lesson]]:
+def _parse_schedule_html(html: str) -> tuple[bool, list[dict] | None, list[Lesson]]:
     found, events = _extract_events_json(html)
     lessons: list[Lesson] = []
-    for event in events:
-        start_raw = str(
-            event.get("Start")
-            or event.get("start")
-            or event.get("Alkaa")
-            or event.get("alkaa")
-            or ""
-        )
-        end_raw = str(event.get("End") or event.get("end") or event.get("Loppuu") or event.get("loppuu") or "")
-        start_dt = None
-        for raw in (start_raw[:19], start_raw):
+    for event in events or []:
+        day = parse_date(str(event.get("Date") or event.get("date") or ""))
+        start_clock = _minutes(event.get("Start") if event.get("Start") is not None else event.get("start"))
+        end_clock = _minutes(event.get("End") if event.get("End") is not None else event.get("end"))
+        if day is None:
+            start_raw = str(event.get("Start") or event.get("start") or event.get("Alkaa") or "")
+            start_dt = None
             for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%d.%m.%Y %H:%M"):
                 try:
-                    start_dt = datetime.strptime(raw[:19], fmt)
+                    start_dt = datetime.strptime(start_raw[:19], fmt)
                     break
                 except ValueError:
                     continue
-            if start_dt:
-                break
-        if start_dt is None:
+            if start_dt is None:
+                continue
+            day = start_dt.date()
+            start_clock = start_clock or start_dt.strftime("%H:%M")
+            end_raw = str(event.get("End") or event.get("end") or "")
+            if not end_clock:
+                for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
+                    try:
+                        end_clock = datetime.strptime(end_raw[:19], fmt).strftime("%H:%M")
+                        break
+                    except ValueError:
+                        continue
+        if not start_clock:
             continue
-        end_clock = ""
-        for raw in (end_raw[:19], end_raw):
-            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%H:%M"):
-                try:
-                    parsed = datetime.strptime(raw[:19] if fmt != "%H:%M" else raw[:5], fmt)
-                    end_clock = parsed.strftime("%H:%M")
-                    break
-                except ValueError:
-                    continue
-            if end_clock:
-                break
-        day = start_dt.date()
         lessons.append(
             Lesson(
                 day=day.isoweekday(),
                 date=day.isoformat(),
-                start=start_dt.strftime("%H:%M"),
+                start=start_clock,
                 end=end_clock,
                 subject=_schedule_subject(event),
                 teacher=_schedule_teacher(event),
@@ -884,7 +919,7 @@ def _parse_schedule_html(html: str) -> tuple[bool, int, list[Lesson]]:
                 dates=[day.isoformat()],
             )
         )
-    return found, len(events), lessons
+    return found, events, lessons
 
 
 def _strip_covered_week(lessons: list[Lesson], monday: date) -> None:
@@ -918,12 +953,9 @@ async def _load_schedule_weeks(session: aiohttp.ClientSession, base_url: str, us
         if status != 200 or not isinstance(payload, str):
             data.probes.append(f"{path} {status} lessons=0")
             continue
-        found, event_count, lessons = _parse_schedule_html(payload)
-        if not found:
+        found, events, lessons = _parse_schedule_html(payload)
+        if not found or events is None:
             data.probes.append(f"{path} {status} lessons=0 no-json")
-            continue
-        if event_count and not lessons:
-            data.probes.append(f"{path} {status} lessons=0 unparsed")
             continue
         data.probes.append(f"{path} {status} lessons={len(lessons)}")
         data.covered_weeks.append(week.isoformat())
