@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import lessons_for_day, next_lesson, parse_date
+from .api import lessons_for_day, next_lesson, parse_date, schedule_attribute
 from .const import CONF_CHILD_ID, CONF_CHILD_NAME, DOMAIN, TIMEZONE
 from .coordinator import WilmaCoordinator, WilmaData, children_from_entry, ChildMessages
 from .homework import split_homework
@@ -465,18 +465,7 @@ class NextLessonSensor(Base):
                 lesson.teacher,
                 lesson.room,
             )
-        attrs["schedule"] = [
-            {
-                "day": lesson.day,
-                "start": lesson.start,
-                "end": lesson.end,
-                "subject": lesson.subject,
-                "teacher": lesson.teacher,
-                "room": lesson.room,
-                "dates": sorted({d.isoformat() for d in map(parse_date, lesson.dates) if d}),
-            }
-            for lesson in ordered
-        ]
+        attrs["schedule"] = schedule_attribute(self.school.schedule, self.school.covered_weeks)
         return attrs
 
 

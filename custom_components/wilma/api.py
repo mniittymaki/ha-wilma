@@ -238,10 +238,14 @@ def _walk_lessons(obj: Any, acc: list[Lesson], depth: int = 0) -> None:
                 day = int(obj.get("Day") or obj.get("day") or obj.get("WeekDay") or 0)
             except (TypeError, ValueError):
                 day = 0
+            # A weekly slot's Day is the weekday number, not a date.
+            date_s = _first_date(obj)
+            if not parse_date(date_s):
+                date_s = ""
             acc.append(
                 Lesson(
                     day=day,
-                    date=_first_date(obj),
+                    date=date_s,
                     start=start,
                     end=end,
                     subject=subject,
@@ -980,6 +984,35 @@ def lessons_for_day(schedule: list[Lesson], target: date, covered_weeks: list[st
         if iso in dates or (not dates and lesson.day == weekday):
             out.append(lesson)
     out.sort(key=lambda item: item.start or "")
+    return out
+
+
+def schedule_attribute(schedule: list[Lesson], covered_weeks: list[str] | None = None) -> list[dict]:
+    """Lessons with the dates they are held on, for dashboards.
+
+    A fetched week has dated lessons and its dates are stripped from the weekly
+    slots, so both go in. A lesson left without a valid date would match every
+    weekday on a dashboard, fetched weeks included, so it stays out once weeks
+    have been fetched.
+    """
+    out = []
+    for lesson in schedule:
+        raw = [lesson.date] if lesson.date else lesson.dates
+        dates = sorted({d.isoformat() for d in map(parse_date, raw) if d})
+        if covered_weeks and not dates:
+            continue
+        out.append(
+            {
+                "day": lesson.day,
+                "start": lesson.start,
+                "end": lesson.end,
+                "subject": lesson.subject,
+                "teacher": lesson.teacher,
+                "room": lesson.room,
+                "dates": dates,
+            }
+        )
+    out.sort(key=lambda item: (item["dates"][:1], item["day"] or 99, item["start"] or "", item["subject"] or ""))
     return out
 
 
