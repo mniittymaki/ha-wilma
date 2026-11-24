@@ -213,26 +213,14 @@ class WilmaCoordinator(DataUpdateCoordinator[WilmaData]):
         self._logged_in = True
 
     async def _fetch_messages(self):
-        assert self.client is not None
-        try:
-            if not self._logged_in:
-                await self.async_login()
-            self._apply_role()
-            return await self.client.get_messages()
-        except AuthenticationError as err:
-            if _transient(err):
-                raise
-            self._logged_in = False
-            await self.async_login()
-            self._apply_role()
-            try:
-                return await self.client.get_messages()
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Wilma get_messages failed: %s", err)
-                return []
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Wilma get_messages failed: %s", err)
+        """Unused by the update path. Kept so nothing calls Wilhelmina get_messages().
+
+        That parser crashes when a system notice has no SenderId.
+        """
+        uid = self._child_uid()
+        if not uid or self._session is None:
             return []
+        return await self._fetch_child_messages(uid)
 
     async def _fetch_child_messages(self, child_id: str) -> list[WilmaMessage]:
         """Fetch messages for a specific child. JSON first, HTML fallback."""
