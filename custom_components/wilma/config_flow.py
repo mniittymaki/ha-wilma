@@ -1,10 +1,11 @@
 """Config flow for Wilma."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
-from wilhelmina import AuthenticationError, WilmaClient, WilmaError
+from wilhelmina import AuthenticationError, WilmaClient
 
 from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -22,6 +23,8 @@ from .const import (
     DOMAIN,
 )
 from .roles import fetch_children
+
+_LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -52,11 +55,15 @@ class WilmaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             session = async_get_clientsession(self.hass)
             client = WilmaClient(url, session=session, headless=True)
             try:
+                # Login is the check. Wilhelmina get_messages() crashes when a
+                # system notice has no SenderId (issues #9, #16), so it is not
+                # used here. The update path parses messages itself.
                 await client.login(username, user_input[CONF_PASSWORD])
-                await client.get_messages()
-            except AuthenticationError:
+            except AuthenticationError as err:
+                _LOGGER.warning("Wilma login failed for %s: %s", url, err)
                 errors["base"] = "invalid_auth"
-            except (WilmaError, Exception):
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Wilma connection validation failed for %s: %s", url, err)
                 errors["base"] = "cannot_connect"
             else:
                 self._data = {
