@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import lru_cache
 import re
 from zoneinfo import ZoneInfo
 
@@ -42,6 +43,7 @@ _CODE_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 
+@lru_cache(maxsize=8192)
 def _norm(value: str) -> str:
     return re.sub(r"[^a-z0-9åäöéèü]+", "", (value or "").casefold())
 
@@ -84,6 +86,10 @@ for _code, _names in _CODE_NAMES.items():
 
 
 def _expand(label: str, aliases: dict[str, set[str]]) -> set[str]:
+    cache = aliases.setdefault("__expand__", {})  # type: ignore[arg-type]
+    cached = cache.get(label)
+    if cached is not None:
+        return cached
     keys = {_norm(label), *(_tokens(label))}
     code = _norm(slot_code(label))
     prefix = _letter_prefix(slot_code(label) or label)
@@ -94,6 +100,7 @@ def _expand(label: str, aliases: dict[str, set[str]]) -> set[str]:
         extra |= set(_NAME_CODES.get(key, set()))
     keys |= extra
     keys.discard("")
+    cache[label] = keys
     return keys
 
 
@@ -199,6 +206,9 @@ def _hint_next(due: datetime, lesson: Lesson) -> str:
     return f"lukujärjestys {code} {weekday} {due.day}.{due.month}. {clock}".strip()
 
 
+_SPLIT_CACHE: dict[tuple, tuple[list[Homework], list[Homework]]] = {}
+
+
 def split_homework(
     homework: list[Homework],
     schedule: list[Lesson],
@@ -209,19 +219,42 @@ def split_homework(
 
     A homework item moves to past once the next weekly lesson AFTER the
     homework date has ended (same-day lesson is the assignment, not the due).
+
+    Sensors read this several times per update. The result is cached on the
+    list objects of one coordinator update so the work runs once.
     """
+    cache_key = (id(homework), id(schedule), id(courses))
+    cached = _SPLIT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     now = now or datetime.now(_TZ)
     if now.tzinfo is None:
         now = now.replace(tzinfo=_TZ)
     aliases = _course_aliases(courses)
+    # Expand each timetable subject once, not once per homework item.
+    prepared = [
+        (_expand(lesson.subject, aliases), lesson)
+        for lesson in schedule
+        if _lesson_day(lesson)
+    ]
+    codes = sorted({slot_code(lesson.subject) for lesson in schedule if slot_code(lesson.subject)})
+    code_hint = f" ({', '.join(codes[:8])})" if codes else ""
     upcoming: list[Homework] = []
     past: list[Homework] = []
     for item in homework:
-        lessons = _weekly_lessons(schedule, item.subject, aliases)
+        item_keys = _expand(item.subject, aliases)
+        track_item = _language_track(item.subject)
+        lessons = []
+        for lesson_keys, lesson in prepared:
+            if not (item_keys & lesson_keys):
+                continue
+            track_lesson = _language_track(lesson.subject)
+            if track_item and track_lesson and track_item[0] == track_lesson[0]:
+                if track_item[1] and track_lesson[1] and track_item[1] != track_lesson[1]:
+                    continue
+            lessons.append(lesson)
         if not lessons:
-            codes = sorted({slot_code(lesson.subject) for lesson in schedule if slot_code(lesson.subject)})
-            extra = f" ({', '.join(codes[:8])})" if codes else ""
-            item.hint = f"ei lukujärjestysosumaa{extra}"
+            item.hint = f"ei lukujärjestysosumaa{code_hint}"
             upcoming.append(item)
             continue
         start_day = parse_date(item.date) or now.date()
@@ -239,4 +272,7 @@ def split_homework(
             upcoming.append(item)
     upcoming.sort(key=lambda item: parse_date(item.date) or datetime.max.date())
     past.sort(key=lambda item: parse_date(item.date) or datetime.min.date(), reverse=True)
+    if len(_SPLIT_CACHE) > 32:
+        _SPLIT_CACHE.clear()
+    _SPLIT_CACHE[cache_key] = (upcoming, past)
     return upcoming, past
